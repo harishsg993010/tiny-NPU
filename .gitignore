@@ -1,0 +1,30 @@
+# Build artifacts
+build/
+sim/verilator/build/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.egg
+
+# Simulation outputs
+*.vcd
+*.fst
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Weights / data (too large for git)
+*.bin
+demo_data/
