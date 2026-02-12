@@ -18,6 +18,7 @@ set(SV_COMMON
     ${RTL_DIR}/pkg/fixed_pkg.sv
     ${RTL_DIR}/mem/sram_dp.sv
     ${RTL_DIR}/mem/banked_sram.sv
+    ${RTL_DIR}/mem/kv_cache_bank.sv
     ${RTL_DIR}/gemm/mac_int8.sv
     ${RTL_DIR}/gemm/pe.sv
     ${RTL_DIR}/gemm/systolic_array.sv
@@ -43,7 +44,6 @@ set(SV_TOP_EXTRA
     ${RTL_DIR}/bus/axi_lite_regs.sv
     ${RTL_DIR}/bus/axi_dma_rd.sv
     ${RTL_DIR}/bus/axi_dma_wr.sv
-    ${RTL_DIR}/mem/kv_cache_bank.sv
     ${RTL_DIR}/ctrl/addr_gen.sv
     ${RTL_DIR}/ctrl/scoreboard.sv
     ${RTL_DIR}/ctrl/barrier.sv
@@ -116,6 +116,7 @@ set(SV_CTRL
     ${RTL_DIR}/ctrl/barrier.sv
     ${RTL_DIR}/ctrl/ucode_fetch.sv
     ${RTL_DIR}/ctrl/ucode_decode.sv
+    ${RTL_DIR}/ctrl/kv_ctrl.sv
 )
 
 # ---- Target 3: Integration Test (single attention head) ----

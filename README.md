@@ -582,7 +582,7 @@ The decode phase computes O(S) per step instead of O(S^2), yielding significant 
 
 Both modes produce **bit-exact identical logits** at every step - the KV cache is a pure performance optimization with no accuracy impact.
 
-In tiny-npu, the KV cache is implemented as a C++ software shim that intercepts `KV_APPEND` and `KV_READ` instructions from the RTL. The hardware issues these instructions through the same scoreboard slot as DMA (Engine 5), with mutual exclusion guards. This approach lets us verify the full KV-cache dataflow without requiring large on-chip SRAM for the cache itself.
+In tiny-npu, the KV cache is implemented entirely in hardware. A dedicated **KV cache controller** (`kv_ctrl.sv`) bridges the 8-bit SRAM0 interface to the 128-bit `kv_cache_bank.sv` storage module. When the microcode decoder dispatches a `KV_APPEND` or `KV_READ` instruction, the controller FSM autonomously transfers data between SRAM0 and the cache bank — packing bytes into 128-bit vectors for appends, and unpacking vectors back to bytes for reads. The controller shares the DMA scoreboard slot (Engine 5) with mutual exclusion guards, and uses single-vector reads to avoid backpressure on the narrow SRAM0 port.
 
 # Graph Mode ISA
 
@@ -1085,7 +1085,7 @@ The fixed-point approach in tiny-npu works well for small models but would need 
 
 ### Hardware KV Cache
 
-tiny-npu's KV cache is implemented in C++ software. A production design would store KV vectors in dedicated on-chip SRAM or HBM, with hardware address generation and prefetching. The `kv_cache_bank.sv` module in the RTL is a start toward this but is not yet integrated into the datapath.
+tiny-npu includes a fully integrated hardware KV cache. The `kv_cache_bank.sv` module provides dedicated SRAM-backed storage for key/value vectors (4 layers x 4 heads x 512 sequence positions x 16-element vectors), and the `kv_ctrl.sv` FSM controller handles all SRAM0-to-cache data transfers autonomously. A production design would additionally include HBM-backed storage for longer sequences and hardware prefetching for streaming reads.
 
 ### Pipelining and Double Buffering
 
@@ -1111,7 +1111,7 @@ Production NPUs increasingly exploit sparsity in weights and activations:
 
 Improvements I want to make to the design:
 
-- [ ] Integrate hardware KV cache (`kv_cache_bank.sv`) into the datapath
+- [x] Integrate hardware KV cache (`kv_cache_bank.sv` + `kv_ctrl.sv`) into the datapath
 - [ ] Add double buffering for weight loading (DMA + compute overlap)
 - [ ] Scale to full GPT-2 dimensions (hidden=768) with weight streaming
 - [ ] Add FP16 accumulation mode for better dynamic range
@@ -1144,6 +1144,7 @@ npu/
       scoreboard.sv            6-engine busy tracking
       barrier.sv               Barrier synchronization
       addr_gen.sv              Address generation
+      kv_ctrl.sv               KV cache controller FSM (SRAM0 <-> kv_cache_bank bridge)
     graph/                   Graph pipeline (Graph Mode)
       graph_isa_pkg.sv         Graph ISA opcodes, instruction/descriptor structs
       graph_fetch.sv           Sequential instruction fetch from program SRAM

@@ -56,18 +56,6 @@ module gpt2_block_top
     output wire  [7:0]         dma_flags,
     input  wire                dma_done_pulse,
 
-    // --- KV Cache command capture (exposed to C++) ---
-    output wire                kv_cmd_captured_out,
-    output wire  [7:0]         kv_opcode_out,
-    output wire  [15:0]        kv_src_out,
-    output wire  [15:0]        kv_dst_out,
-    output wire  [15:0]        kv_m_out,       // layer_id
-    output wire  [15:0]        kv_n_out,       // vector_length
-    output wire  [15:0]        kv_k_out,       // time_index or time_len
-    output wire  [7:0]         kv_flags_out,
-    output wire  [15:0]        kv_imm_out,     // head_id
-    input  wire                kv_done_pulse,
-
     // --- Debug ---
     output wire  [7:0]         engine_busy_dbg,
     output wire                all_idle_dbg,
@@ -424,14 +412,6 @@ module gpt2_block_top
     logic        dma_captured_r;
     logic        dma_done_internal;
 
-    // KV Cache Shim: capture KV_APPEND/KV_READ commands
-    logic        kv_active;
-    logic [7:0]  kv_opcode_r;
-    logic [15:0] kv_src_r, kv_dst_r, kv_m_r, kv_n_r, kv_k_r, kv_imm_r;
-    logic [7:0]  kv_flags_r;
-    logic        kv_captured_r;
-    logic        kv_done_internal;
-
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             dma_active     <= 1'b0;
@@ -440,22 +420,11 @@ module gpt2_block_top
             dma_dst_r      <= '0;
             dma_len_r      <= '0;
             dma_flags_r    <= '0;
-            kv_active      <= 1'b0;
-            kv_captured_r  <= 1'b0;
-            kv_opcode_r    <= '0;
-            kv_src_r       <= '0;
-            kv_dst_r       <= '0;
-            kv_m_r         <= '0;
-            kv_n_r         <= '0;
-            kv_k_r         <= '0;
-            kv_flags_r     <= '0;
-            kv_imm_r       <= '0;
         end else begin
             dma_captured_r <= 1'b0;
-            kv_captured_r  <= 1'b0;
 
             // DMA capture (guard: neither DMA nor KV already active)
-            if ((dma_rd_cmd_valid_dec || dma_wr_cmd_valid_dec) && !dma_active && !kv_active) begin
+            if ((dma_rd_cmd_valid_dec || dma_wr_cmd_valid_dec) && !dma_active && !kv_busy) begin
                 dma_active     <= 1'b1;
                 dma_captured_r <= 1'b1;
                 dma_src_r      <= dma_rd_cmd_valid_dec ? dma_rd_cmd_src_dec : dma_wr_cmd_src_dec;
@@ -464,22 +433,6 @@ module gpt2_block_top
                 dma_flags_r    <= dma_rd_cmd_valid_dec ? dma_rd_cmd_flags_dec : dma_wr_cmd_flags_dec;
             end else if (dma_done_pulse && dma_active) begin
                 dma_active <= 1'b0;
-            end
-
-            // KV capture (guard: neither DMA nor KV already active)
-            if (kv_cmd_valid_dec && !kv_active && !dma_active) begin
-                kv_active     <= 1'b1;
-                kv_captured_r <= 1'b1;
-                kv_opcode_r   <= kv_cmd_opcode_dec;
-                kv_src_r      <= kv_cmd_src0_dec;
-                kv_dst_r      <= kv_cmd_dst_dec;
-                kv_m_r        <= decoded_instr.M;
-                kv_n_r        <= decoded_instr.N;
-                kv_k_r        <= decoded_instr.K;
-                kv_flags_r    <= kv_cmd_flags_dec;
-                kv_imm_r      <= kv_cmd_imm_dec;
-            end else if (kv_done_pulse && kv_active) begin
-                kv_active <= 1'b0;
             end
         end
     end
@@ -490,17 +443,6 @@ module gpt2_block_top
     assign dma_dst           = dma_dst_r;
     assign dma_len           = dma_len_r;
     assign dma_flags         = dma_flags_r;
-
-    assign kv_done_internal    = kv_done_pulse && kv_active;
-    assign kv_cmd_captured_out = kv_captured_r;
-    assign kv_opcode_out       = kv_opcode_r;
-    assign kv_src_out          = kv_src_r;
-    assign kv_dst_out          = kv_dst_r;
-    assign kv_m_out            = kv_m_r;
-    assign kv_n_out            = kv_n_r;
-    assign kv_k_out            = kv_k_r;
-    assign kv_flags_out        = kv_flags_r;
-    assign kv_imm_out          = kv_imm_r;
 
     // ================================================================
     // Engine wires
@@ -552,6 +494,112 @@ module gpt2_block_top
     logic [7:0]  ve_wr_data;
 
     // ================================================================
+    // KV Cache Controller + Bank
+    // ================================================================
+    localparam int KV_MAX_LAYERS = 4;
+    localparam int KV_MAX_HEADS  = 4;
+    localparam int KV_MAX_SEQ    = 512;
+    localparam int KV_HEAD_DIM   = 16;
+    localparam int KV_VEC_W      = KV_HEAD_DIM * 8;
+
+    logic        kv_busy, kv_done;
+    logic        kv_rd_en;
+    logic [15:0] kv_rd_addr;
+    logic        kv_wr_en;
+    logic [15:0] kv_wr_addr;
+    logic [7:0]  kv_wr_data;
+
+    // KV cache bank connections
+    logic                                  kv_append_valid, kv_append_ready, kv_append_done;
+    logic [$clog2(KV_MAX_LAYERS)-1:0]      kv_append_layer;
+    logic [$clog2(KV_MAX_HEADS)-1:0]       kv_append_head;
+    logic [$clog2(KV_MAX_SEQ)-1:0]         kv_append_time;
+    logic                                  kv_append_is_v;
+    logic [KV_VEC_W-1:0]                   kv_append_data;
+
+    logic                                  kv_read_req_valid, kv_read_req_ready;
+    logic [$clog2(KV_MAX_LAYERS)-1:0]      kv_read_layer;
+    logic [$clog2(KV_MAX_HEADS)-1:0]       kv_read_head;
+    logic [$clog2(KV_MAX_SEQ)-1:0]         kv_read_time_start, kv_read_time_len;
+    logic                                  kv_read_is_v;
+    logic                                  kv_read_data_valid;
+    logic [KV_VEC_W-1:0]                   kv_read_data;
+    logic                                  kv_read_data_last;
+
+    kv_cache_bank #(
+        .MAX_LAYERS (KV_MAX_LAYERS),
+        .MAX_HEADS  (KV_MAX_HEADS),
+        .MAX_SEQ    (KV_MAX_SEQ),
+        .HEAD_DIM   (KV_HEAD_DIM)
+    ) u_kv_bank (
+        .clk             (clk),
+        .rst_n           (rst_n),
+        .append_valid    (kv_append_valid),
+        .append_ready    (kv_append_ready),
+        .append_layer    (kv_append_layer),
+        .append_head     (kv_append_head),
+        .append_time     (kv_append_time),
+        .append_is_v     (kv_append_is_v),
+        .append_data     (kv_append_data),
+        .append_done     (kv_append_done),
+        .read_req_valid  (kv_read_req_valid),
+        .read_req_ready  (kv_read_req_ready),
+        .read_layer      (kv_read_layer),
+        .read_head       (kv_read_head),
+        .read_time_start (kv_read_time_start),
+        .read_time_len   (kv_read_time_len),
+        .read_is_v       (kv_read_is_v),
+        .read_data_valid (kv_read_data_valid),
+        .read_data       (kv_read_data),
+        .read_data_last  (kv_read_data_last)
+    );
+
+    kv_ctrl #(
+        .MAX_LAYERS (KV_MAX_LAYERS),
+        .MAX_HEADS  (KV_MAX_HEADS),
+        .MAX_SEQ    (KV_MAX_SEQ),
+        .HEAD_DIM   (KV_HEAD_DIM)
+    ) u_kv_ctrl (
+        .clk             (clk),
+        .rst_n           (rst_n),
+        .cmd_valid       (kv_cmd_valid_dec),
+        .cmd_opcode      (kv_cmd_opcode_dec),
+        .cmd_src0        (kv_cmd_src0_dec),
+        .cmd_dst         (kv_cmd_dst_dec),
+        .cmd_m           (decoded_instr.M),
+        .cmd_n           (decoded_instr.N),
+        .cmd_k           (decoded_instr.K),
+        .cmd_flags       (kv_cmd_flags_dec),
+        .cmd_imm         (kv_cmd_imm_dec),
+        .sram_rd_en      (kv_rd_en),
+        .sram_rd_addr    (kv_rd_addr),
+        .sram_rd_data    (s0_a_dout),
+        .sram_wr_en      (kv_wr_en),
+        .sram_wr_addr    (kv_wr_addr),
+        .sram_wr_data    (kv_wr_data),
+        .append_valid    (kv_append_valid),
+        .append_ready    (kv_append_ready),
+        .append_layer    (kv_append_layer),
+        .append_head     (kv_append_head),
+        .append_time     (kv_append_time),
+        .append_is_v     (kv_append_is_v),
+        .append_data     (kv_append_data),
+        .append_done     (kv_append_done),
+        .read_req_valid  (kv_read_req_valid),
+        .read_req_ready  (kv_read_req_ready),
+        .read_layer      (kv_read_layer),
+        .read_head       (kv_read_head),
+        .read_time_start (kv_read_time_start),
+        .read_time_len   (kv_read_time_len),
+        .read_is_v       (kv_read_is_v),
+        .read_data_valid (kv_read_data_valid),
+        .read_data       (kv_read_data),
+        .read_data_last  (kv_read_data_last),
+        .busy            (kv_busy),
+        .done            (kv_done)
+    );
+
+    // ================================================================
     // DATA SRAM0 (8-bit x SRAM0_DEPTH) - main data and weights
     // Port A: engine/TB reads, Port B: engine/TB writes
     // ================================================================
@@ -579,6 +627,9 @@ module gpt2_block_top
         end else if (ve_busy) begin
             s0_a_en   = ve_rd0_en;
             s0_a_addr = ve_rd0_addr[SRAM0_AW-1:0];
+        end else if (kv_busy) begin
+            s0_a_en   = kv_rd_en;
+            s0_a_addr = kv_rd_addr[SRAM0_AW-1:0];
         end else begin
             s0_a_en   = tb_sram0_rd_en;
             s0_a_addr = tb_sram0_rd_addr;
@@ -612,6 +663,11 @@ module gpt2_block_top
             s0_b_we   = ve_wr_en;
             s0_b_addr = ve_wr_addr[SRAM0_AW-1:0];
             s0_b_din  = ve_wr_data;
+        end else if (kv_busy) begin
+            s0_b_en   = kv_wr_en;
+            s0_b_we   = kv_wr_en;
+            s0_b_addr = kv_wr_addr[SRAM0_AW-1:0];
+            s0_b_din  = kv_wr_data;
         end else begin
             s0_b_en   = tb_sram0_wr_en;
             s0_b_we   = tb_sram0_wr_en;
@@ -817,7 +873,7 @@ module gpt2_block_top
     assign engine_done_vec[2] = ln_done;                  // ENG_LAYERNORM
     assign engine_done_vec[3] = ge_done;                  // ENG_GELU
     assign engine_done_vec[4] = ve_done;                  // ENG_VEC
-    assign engine_done_vec[5] = dma_done_internal | kv_done_internal; // ENG_DMA (shared by DMA + KV)
+    assign engine_done_vec[5] = dma_done_internal | kv_done; // ENG_DMA (shared by DMA + KV)
     assign engine_done_vec[6] = 1'b0;                    // ENG_RMSNORM (not present in GPT-2)
     assign engine_done_vec[7] = 1'b0;                    // ENG_ROPE (not present in GPT-2)
 

@@ -1061,7 +1061,6 @@ int main(int argc, char** argv) {
     dut->tb_sram1_wr_en = 0; dut->tb_sram1_wr_addr = 0; dut->tb_sram1_wr_data = 0;
     dut->tb_sram1_rd_en = 0; dut->tb_sram1_rd_addr = 0;
     dut->dma_done_pulse = 0;
-    dut->kv_done_pulse = 0;
 
     std::cout << "============================================" << std::endl;
     std::cout << "  LLAMA BLOCK TEST: GQA + RoPE + SwiGLU" << std::endl;

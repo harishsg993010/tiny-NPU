@@ -889,13 +889,6 @@ int run_until_done(int max_cycles = 4000000) {
             dut->dma_done_pulse = 0;
         }
 
-        // KV cache interception (not used in full-recompute, but handle gracefully)
-        if (dut->kv_cmd_captured_out) {
-            dut->kv_done_pulse = 1;
-            tick(); cycle++;
-            dut->kv_done_pulse = 0;
-        }
-
         if (dut->program_end) {
             for (int i = 0; i < 10; i++) tick();
             return cycle;
@@ -1198,7 +1191,6 @@ int main(int argc, char** argv) {
     dut->tb_sram1_wr_en = 0; dut->tb_sram1_wr_addr = 0; dut->tb_sram1_wr_data = 0;
     dut->tb_sram1_rd_en = 0; dut->tb_sram1_rd_addr = 0;
     dut->dma_done_pulse = 0;
-    dut->kv_done_pulse = 0;
 
     // Reset
     reset_dut();

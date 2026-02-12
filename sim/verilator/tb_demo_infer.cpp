@@ -571,75 +571,6 @@ void handle_dma_command() {
 }
 
 // =============================================================================
-// KV Cache Storage (C++ software, accessed via hardware shim)
-// =============================================================================
-static int8_t kv_cache_k[N_LAYERS][HEADS][MAX_SEQ][HEAD_DIM];  // K cache per layer per head
-static int8_t kv_cache_v[N_LAYERS][HEADS][MAX_SEQ][HEAD_DIM];  // V cache per layer per head
-
-void kv_cache_clear() {
-    memset(kv_cache_k, 0, sizeof(kv_cache_k));
-    memset(kv_cache_v, 0, sizeof(kv_cache_v));
-}
-
-// Handle KV_APPEND: read vector from SRAM0, store into KV cache
-void handle_kv_append() {
-    uint16_t src_addr = dut->kv_src_out;
-    int layer   = dut->kv_m_out;
-    int time_idx = dut->kv_k_out;
-    int vec_len  = dut->kv_n_out;
-    int is_v     = dut->kv_flags_out & 0x01;
-    int head_id  = dut->kv_imm_out;
-
-    if (NPU_DUMP) {
-        std::cout << "  KV_APPEND: layer=" << layer << " head=" << head_id
-                  << " t=" << time_idx
-                  << " is_v=" << is_v << " src=0x" << std::hex << src_addr
-                  << " len=" << std::dec << vec_len << std::endl;
-    }
-
-    int8_t* dst = is_v ? kv_cache_v[layer][head_id][time_idx]
-                       : kv_cache_k[layer][head_id][time_idx];
-    for (int j = 0; j < vec_len; j++) {
-        dst[j] = (int8_t)sram0_read(src_addr + j);
-    }
-}
-
-// Handle KV_READ: read vectors from KV cache, write to SRAM0
-void handle_kv_read() {
-    uint16_t dst_addr = dut->kv_dst_out;
-    int layer    = dut->kv_m_out;
-    int time_len = dut->kv_k_out;
-    int vec_len  = dut->kv_n_out;
-    int is_v     = dut->kv_flags_out & 0x01;
-    int head_id  = dut->kv_imm_out;
-
-    if (NPU_DUMP) {
-        std::cout << "  KV_READ: layer=" << layer << " head=" << head_id
-                  << " time_len=" << time_len
-                  << " is_v=" << is_v << " dst=0x" << std::hex << dst_addr
-                  << " len=" << std::dec << vec_len << std::endl;
-    }
-
-    for (int t = 0; t < time_len; t++) {
-        const int8_t* src = is_v ? kv_cache_v[layer][head_id][t]
-                                 : kv_cache_k[layer][head_id][t];
-        for (int j = 0; j < vec_len; j++) {
-            sram0_write(dst_addr + t * vec_len + j, (uint8_t)src[j]);
-        }
-    }
-}
-
-// Handle KV command captured by hardware shim
-void handle_kv_command() {
-    uint8_t opcode = dut->kv_opcode_out;
-    if (opcode == OP_KV_APPEND) {
-        handle_kv_append();
-    } else if (opcode == OP_KV_READ) {
-        handle_kv_read();
-    }
-}
-
-// =============================================================================
 // Generate microcode for one transformer block
 // Returns number of instructions written
 // =============================================================================
@@ -1202,14 +1133,6 @@ int run_until_done(int max_cycles = 2000000) {
             dut->dma_done_pulse = 0;
         }
 
-        // KV cache interception
-        if (dut->kv_cmd_captured_out) {
-            handle_kv_command();
-            dut->kv_done_pulse = 1;
-            tick(); cycle++;
-            dut->kv_done_pulse = 0;
-        }
-
         if (dut->program_end) {
             for (int i = 0; i < 10; i++) tick();
             return cycle;
@@ -1611,7 +1534,6 @@ int main(int argc, char** argv) {
     dut->tb_sram1_wr_en = 0; dut->tb_sram1_wr_addr = 0; dut->tb_sram1_wr_data = 0;
     dut->tb_sram1_rd_en = 0; dut->tb_sram1_rd_addr = 0;
     dut->dma_done_pulse = 0;
-    dut->kv_done_pulse = 0;
 
     // Reset
     reset_dut();
@@ -1628,7 +1550,7 @@ int main(int argc, char** argv) {
     // ======================================================================
     // KV-CACHED PATH: Prefill + Decode
     // ======================================================================
-    kv_cache_clear();
+    // KV cache is now in hardware (kv_cache_bank), cleared by reset
     int prompt_len = (int)tokens.size();
 
     // --- PREFILL PHASE ---
