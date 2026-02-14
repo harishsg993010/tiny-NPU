@@ -2,7 +2,7 @@
 
 A minimal neural processing unit in SystemVerilog, optimized for learning how NPUs work from the ground up.
 
-Built with fully documented SystemVerilog RTL, two execution modes (LLM Mode for transformer inference and Graph Mode for ONNX models), a complete 128-bit microcode ISA, working GPT-2, LLaMA, Mistral and Qwen2 inference running on real HuggingFace weights, KV-cache optimization, an ONNX compiler for MLP and CNN models, and full Verilator simulation with cycle-accurate verification.
+Built with fully documented SystemVerilog RTL, two execution modes (LLM Mode for transformer inference and Graph Mode for ONNX models), a complete 128-bit microcode ISA, working GPT-2, LLaMA, Mistral and Qwen2 inference running on real HuggingFace weights, KV-cache optimization, an ONNX compiler supporting Gemm, Conv, Reduce, Exp/Log/Sqrt, Gather, Slice, Concat, BatchNorm, AvgPool and more, 50-model fuzz testing, and full Verilator simulation with cycle-accurate verification.
 
 ### Table of Contents
 
@@ -47,7 +47,7 @@ This is why I built `tiny-npu`.
 >
 > **tiny-npu** is a minimal, fully synthesizable neural processing unit in SystemVerilog, optimized for learning about how NPUs work from the ground up.
 >
-> It supports two execution modes: **LLM Mode** for running real transformer models (GPT-2, LLaMA, Mistral, Qwen2) with a 128-bit microcode ISA, and **Graph Mode** for running ONNX models (MLP, CNN) with a dedicated graph ISA and tensor descriptor table. Both modes share the same compute engines (systolic array, softmax, etc.) and on-chip SRAM.
+> It supports two execution modes: **LLM Mode** for running real transformer models (GPT-2, LLaMA, Mistral, Qwen2) with a 128-bit microcode ISA, and **Graph Mode** for running ONNX models with a dedicated graph ISA, tensor descriptor table, and 9 hardware engines (GEMM, Softmax, Reduce, Math LUT, Gather, Slice, Concat, AvgPool, plus inline element-wise). Both modes share the same compute core and on-chip SRAM.
 
 With this motivation in mind, we can strip away the complexity of production-grade accelerators (multi-chip interconnects, HBM controllers, sparsity engines) and focus on the core elements that make neural network inference work in hardware:
 
@@ -57,8 +57,9 @@ With this motivation in mind, we can strip away the complexity of production-gra
 4. **Memory Management** - How do you fit weights, activations, and intermediate results in limited on-chip SRAM?
 5. **KV-Cache Optimization** - How does caching key/value vectors make autoregressive decoding faster?
 6. **Graph Execution** - How does a hardware FSM walk an ONNX computation graph, issuing DMA, GEMM, and element-wise ops automatically?
+7. **Dedicated Engines** - How do purpose-built hardware engines for reduce, gather, slice, concat, and pooling accelerate graph execution?
 
-The result: a chip that runs real GPT-2, LLaMA, Mistral and Qwen2 weights from HuggingFace through INT8 quantized inference with multi-head attention, and also compiles and executes arbitrary ONNX MLP/CNN models end-to-end - all verified cycle-accurate against Python and C++ golden models.
+The result: a chip that runs real GPT-2, LLaMA, Mistral and Qwen2 weights from HuggingFace through INT8 quantized inference with multi-head attention, and also compiles and executes arbitrary ONNX models end-to-end (verified across 50 fuzz-generated random graphs) - all cycle-accurate against Python and C++ golden models.
 
 # Architecture
 
@@ -91,6 +92,16 @@ The result: a chip that runs real GPT-2, LLaMA, Mistral and Qwen2 weights from H
                          |  RMSNorm     |  |   SiLU   |  |  Engine  |
                          |  Engines      |  |  Engines |  | (rotate) |
                          +---------------+  +----------+  +----------+
+
+                    Graph Mode Phase 3 Engines (dedicated hardware)
+                    ================================================
+    +-----------+ +-----------+ +-----------+ +-----------+ +-----------+
+    |  Reduce   | |   Math    | |  Gather   | |Slice/Concat| | AvgPool2D|
+    | Sum/Max/  | | Exp/Log/  | | Axis-0    | | Last-dim  | | Sliding  |
+    |  Mean     | | Sqrt/Rsqrt| | row copy  | | operations| | window   |
+    | INT32 acc | | 256-entry | |           | |           | | INT32 acc|
+    +-----------+ |  LUTs     | +-----------+ +-----------+ +----------+
+                  +-----------+
                                   |
                     +-------------v--------------+
                     |     On-Chip SRAM Banks      |
@@ -104,7 +115,7 @@ The NPU supports two execution modes selected via the `REG_EXEC_MODE` register:
 
 - **LLM Mode** (`EXEC_MODE=0`, default) - The microcode controller fetches 128-bit instructions from SRAM, decodes them, and dispatches to 6 independent engines via a scoreboard. Used for transformer inference (GPT-2, LLaMA, Mistral, Qwen2).
 
-- **Graph Mode** (`EXEC_MODE=1`) - The graph pipeline fetches 128-bit graph ISA instructions from a dedicated program SRAM, looks up tensor descriptors from a 256-entry table, and executes operations serially (one at a time). Used for ONNX model inference (MLP, CNN).
+- **Graph Mode** (`EXEC_MODE=1`) - The graph pipeline fetches 128-bit graph ISA instructions from a dedicated program SRAM, looks up tensor descriptors from a 256-entry table, and dispatches to 9 hardware engines serially (one at a time). Supports GEMM, Softmax, Reduce (Sum/Max/Mean), Math (Exp/Log/Sqrt/Rsqrt via LUT), Gather, Slice, Concat, AvgPool2D, and inline element-wise ops. Used for ONNX model inference.
 
 Both modes share all compute engines (GEMM, Softmax, etc.) and SRAM. They are fully isolated - switching modes requires no reset, just writing the `REG_EXEC_MODE` register.
 
@@ -167,6 +178,11 @@ The dispatch FSM handles each operation type:
 - **EW_ADD/MUL/SUB** - Internal 3-cycle/element loop: read A from SRAM, read B from SRAM, compute + write
 - **RELU** - Internal 2-cycle/element loop: read from SRAM, write `max(0, val)`
 - **SOFTMAX** - Program the softmax engine with source/destination from descriptors
+- **REDUCE_SUM/MAX/MEAN** - Program the reduce engine with axis dimension and outer count
+- **EXP/LOG/SQRT/RSQRT** - Program the math engine (element-wise LUT, 5 cycles/element)
+- **GATHER** - Program the gather engine with row size and index tensor
+- **SLICE/CONCAT** - Program slice or concat engine with row geometry
+- **AVGPOOL2D** - Program the pooling engine with kernel/stride and channel dimensions
 
 ### Dispatcher
 
@@ -221,7 +237,7 @@ SRAM0 Memory Map (LLM Mode - one transformer block, 4-head attention)
 
 The head-blocked QKV layout keeps total weight size unchanged (3 x 4096B = 12KB for QKV) while enabling direct per-head addressing: head h's query weights are at `Wq + h * 1024`.
 
-In **Graph Mode**, SRAM0 is allocated dynamically by the ONNX compiler. The SRAM0 mux priority ensures correct arbitration: `graph_dispatch_ew > gemm > softmax > testbench`.
+In **Graph Mode**, SRAM0 is allocated dynamically by the ONNX compiler with a first-fit memory planner that reuses freed buffers. The SRAM0 mux priority ensures correct arbitration: `ew > gemm > softmax > reduce > math > gather > slice > concat > avgpool > testbench`.
 
 **SRAM1 (8KB)** - Auxiliary storage for LayerNorm beta parameters and residual connections (LLM Mode only). Separated from SRAM0 because the vec engine needs to read from both SRAM0 and SRAM1 simultaneously for residual adds.
 
@@ -349,7 +365,7 @@ The graph pipeline:
 1. Fetches 128-bit graph ISA instructions from a dedicated program SRAM
 2. Decodes them into opcode + tensor IDs
 3. Looks up tensor descriptors (DDR address, SRAM address, shape, size) from a 256-entry table
-4. Executes each operation serially: DMA transfers, GEMM, element-wise ops, ReLU, softmax
+4. Dispatches to one of 9 hardware engines or executes inline element-wise loops
 
 Supported ONNX operations:
 
@@ -360,10 +376,25 @@ Supported ONNX operations:
 | `Conv` | im2col (pre-materialized in DDR) + GEMM + EW_ADD bias |
 | `Reshape` / `Flatten` | SRAM alias (no hardware op) |
 | `Softmax` | SOFTMAX engine |
+| `ReduceSum` / `ReduceMax` / `ReduceMean` | REDUCE engine (INT32 accumulator) |
+| `Exp` / `Log` / `Sqrt` | MATH engine (256-entry LUT, 5 cycles/element) |
+| `Gather` | GATHER engine (axis-0 row copy with bounds check) |
+| `Slice` | SLICE engine (materialized N-D slice) |
+| `Concat` | CONCAT engine (last-dim interleave) |
+| `Add` / `Sub` / `Mul` | EW_ADD / EW_SUB / EW_MUL (inline 3-cycle/element loop) |
+| `BatchNormalization` | Compiler lowering to EW_MUL + EW_ADD (pre-computed scale/offset) |
+| `AveragePool` | AVGPOOL2D engine (sliding window, INT32 accumulator) |
 
 Verified models:
 - **MLP**: `[1,32] -> Gemm -> ReLU -> Gemm -> [1,8]` (exact byte match)
 - **CNN**: `[1,1,8,8] -> Conv(3x3,4 filters) -> ReLU -> Flatten -> Gemm -> [1,4]` (exact byte match)
+- **Reduce**: `[1,8,4] -> ReduceSum(axis=2) -> ReduceMax(axis=1) -> [1]` (exact byte match)
+- **Math**: `[1,16] -> Exp -> Log -> Sqrt -> [1,16]` (exact byte match)
+- **Gather**: `[4,8] + indices -> Gather(axis=0) -> [2,8]` (exact byte match)
+- **Slice+Concat**: `[1,8] -> Slice -> [1,4]`, then Concat -> `[1,12]` (exact byte match)
+- **BatchNorm+Pool**: `[1,4,6,6] -> BN -> ReLU -> AvgPool(2x2) -> [1,4,3,3]` (exact byte match)
+- **Fuzz**: 50 randomly generated graphs (5-15 nodes, random shapes) - all pass
+- **Stress**: 56-node deep graph exercising all engine types (exact byte match)
 
 # LLM Mode ISA
 
@@ -607,19 +638,30 @@ Graph Mode uses a separate 128-bit instruction format optimized for tensor opera
 
 ### Graph Opcodes
 
-| Code | Mnemonic | Description |
-|------|----------|-------------|
-| 0x00 | `OP_G_END` | End of program (zeros = END for safety) |
-| 0x01 | `OP_G_BARRIER` | No-op in serialized mode |
-| 0x10 | `OP_G_DMA_LOAD` | Load tensor from DDR to SRAM (src0 = tensor ID) |
-| 0x11 | `OP_G_DMA_STORE` | Store tensor from SRAM to DDR (src0 = tensor ID) |
-| 0x12 | `OP_G_DMA_STRIDED` | Strided DMA (for im2col patterns) |
-| 0x20 | `OP_G_GEMM` | Matrix multiply (src0=A, src1=B, dst=C tensor IDs) |
-| 0x30 | `OP_G_EW_ADD` | Element-wise add with saturation |
-| 0x31 | `OP_G_EW_MUL` | Element-wise multiply (Q7 fixed-point) |
-| 0x32 | `OP_G_EW_SUB` | Element-wise subtract with saturation |
-| 0x38 | `OP_G_RELU` | ReLU activation (in-place capable) |
-| 0x40 | `OP_G_SOFTMAX` | Softmax via the softmax engine |
+| Code | Mnemonic | Engine | Description |
+|------|----------|--------|-------------|
+| 0x00 | `OP_G_END` | - | End of program (zeros = END for safety) |
+| 0x01 | `OP_G_BARRIER` | - | No-op in serialized mode |
+| 0x10 | `OP_G_DMA_LOAD` | DMA | Load tensor from DDR to SRAM (src0 = tensor ID) |
+| 0x11 | `OP_G_DMA_STORE` | DMA | Store tensor from SRAM to DDR (src0 = tensor ID) |
+| 0x12 | `OP_G_DMA_STRIDED` | DMA | Strided DMA (for im2col patterns) |
+| 0x20 | `OP_G_GEMM` | GEMM | Matrix multiply (src0=A, src1=B, dst=C tensor IDs) |
+| 0x30 | `OP_G_EW_ADD` | Inline | Element-wise add with saturation |
+| 0x31 | `OP_G_EW_MUL` | Inline | Element-wise multiply (Q7 fixed-point) |
+| 0x32 | `OP_G_EW_SUB` | Inline | Element-wise subtract with saturation |
+| 0x38 | `OP_G_RELU` | Inline | ReLU activation (in-place capable) |
+| 0x40 | `OP_G_SOFTMAX` | Softmax | Softmax via the softmax engine |
+| 0x50 | `OP_G_REDUCE_SUM` | Reduce | Sum reduction along axis |
+| 0x51 | `OP_G_REDUCE_MAX` | Reduce | Max reduction along axis |
+| 0x52 | `OP_G_REDUCE_MEAN` | Reduce | Mean reduction along axis |
+| 0x58 | `OP_G_EXP` | Math | Element-wise exp via 256-entry LUT |
+| 0x59 | `OP_G_LOG` | Math | Element-wise log via 256-entry LUT |
+| 0x5A | `OP_G_SQRT` | Math | Element-wise sqrt via 256-entry LUT |
+| 0x5B | `OP_G_RSQRT` | Math | Element-wise rsqrt via 256-entry LUT |
+| 0x60 | `OP_G_GATHER` | Gather | Axis-0 gather (row copy by index) |
+| 0x68 | `OP_G_SLICE` | Slice | Materialized N-D slice |
+| 0x69 | `OP_G_CONCAT` | Concat | Last-dimension concatenation |
+| 0x70 | `OP_G_AVGPOOL2D` | AvgPool | 2D average pooling with sliding window |
 
 ### GEMM Flags (Graph Mode)
 
@@ -656,8 +698,16 @@ Three cycles are spent looking up tensor descriptors (src0, src1, dst) from the 
 - **EW_ADD/MUL/SUB**: Runs an internal 3-state loop (RD_A -> RD_B -> COMPUTE) for each element
 - **RELU**: Runs an internal 2-state loop (RD -> WR) for each element
 - **SOFTMAX**: Programs the softmax engine, waits for `sm_done`
+- **REDUCE**: Programs the reduce engine with `reduce_dim` (from `imm0`) and `outer_count` (from `imm1`), waits for `re_done`
+- **MATH (EXP/LOG/SQRT/RSQRT)**: Programs the math engine with opcode and length, waits for `me_done`
+- **GATHER**: Programs the gather engine with source data/index/destination addresses and row geometry, waits for `ga_done`
+- **SLICE**: Programs the slice engine with source/destination row lengths and start offset, waits for `sl_done`
+- **CONCAT**: Programs the concat engine with two source bases and row lengths, waits for `ct_done`
+- **AVGPOOL2D**: Programs the pooling engine with C/H/W and kernel/stride parameters, waits for `ap_done`
 
-Error detection halts the FSM on bad opcodes or GEMM shape mismatches (e.g., A's K != B's inner dimension, accounting for `TRANSPOSE_B`).
+Hardware performance counters track cycles spent in each engine type. A configurable timeout (default 1M cycles per op) triggers `GERR_TIMEOUT` if any engine hangs.
+
+Error detection halts the FSM on bad opcodes, GEMM shape mismatches, or engine timeouts.
 
 ## Tensor Descriptor Table
 
@@ -694,13 +744,13 @@ The ONNX compiler (`python/onnx_compiler/compile.py`) transforms an ONNX model i
         |
    DDR Allocation (64B-aligned, weights + biases + im2col)
         |
-   SRAM0 Allocation (bump allocator, must fit in 64KB)
+   SRAM0 Allocation (memory planner with first-fit reuse)
         |
    Tensor Descriptor Table (256 entries x 32B)
         |
-   Op Lowering (Gemm -> DMA+GEMM+EW_ADD, Conv -> im2col+GEMM+EW_ADD, etc.)
+   Op Lowering (Gemm, Conv, Reduce, Math, Gather, Slice, Concat, BN, Pool, ...)
         |
-   Golden Computation (INT8 GEMM with INT32 acc + requant + saturating add)
+   Golden Computation (INT8 with INT32 acc, matching RTL exactly)
         |
    Output: program.bin, tdesc.bin, ddr_image.bin, golden.bin, manifest.json
 ```
@@ -709,6 +759,8 @@ Key compiler decisions:
 - **Requantization**: `shift = ceil(log2(K))`, `scale = 1`. Rounding: `(acc + (1 << (shift-1))) >> shift`
 - **Bias handling**: Bias is added AFTER requantization via a separate `EW_ADD` instruction (matches RTL pipeline order)
 - **Conv lowering**: im2col is pre-materialized by the compiler in DDR, then loaded to SRAM and multiplied via GEMM
+- **BatchNorm lowering**: Pre-computes `scale/sqrt(var+eps)` and `bias - mean*multiplier`, then emits EW_MUL + EW_ADD (no new RTL needed)
+- **Memory planner**: First-fit allocator with liveness analysis. Tensors are freed after their last use and memory is reclaimed for subsequent allocations. `--no-reuse` flag disables reuse for debugging.
 - **SRAM tracking**: The compiler tracks which tensors are "live" in SRAM to avoid redundant DMA loads
 
 # Inference Demo
@@ -822,7 +874,7 @@ cmake ..
 cmake --build . -j$(nproc)
 ```
 
-This builds 10 simulation targets:
+This builds 17 simulation targets:
 
 | # | Target | Mode | Description |
 |---|--------|------|-------------|
@@ -834,8 +886,15 @@ This builds 10 simulation targets:
 | 6 | `kv_cache_sim` | LLM | KV cache correctness (bit-exact vs full-recompute) |
 | 7 | `llama_block_sim` | LLM | Full LLaMA transformer block (GQA, RoPE, SwiGLU) |
 | 8 | `llama_demo_infer` | LLM | End-to-end LLaMA inference demo |
-| 9 | `onnx_smoke_sim` | Graph | MLP smoke test (Gemm -> ReLU -> Gemm, exact byte match) |
-| 10 | `onnx_cnn_smoke_sim` | Graph | CNN smoke test (Conv -> ReLU -> Flatten -> Gemm, exact byte match) |
+| 9 | `onnx_smoke_sim` | Graph | MLP smoke test (Gemm -> ReLU -> Gemm) |
+| 10 | `onnx_cnn_smoke_sim` | Graph | CNN smoke test (Conv -> ReLU -> Flatten -> Gemm) |
+| 11 | `onnx_reduce_sim` | Graph | Reduce engine test (ReduceSum + ReduceMax) |
+| 12 | `onnx_math_sim` | Graph | Math engine test (Exp -> Log -> Sqrt) |
+| 13 | `onnx_gather_sim` | Graph | Gather engine test (axis-0 row gather) |
+| 14 | `onnx_slice_concat_sim` | Graph | Slice + Concat engine test |
+| 15 | `onnx_batchnorm_pool_sim` | Graph | BatchNorm lowering + AvgPool2D engine test |
+| 16 | `onnx_fuzz_sim` | Graph | 50 random fuzz models (all ops, random shapes) |
+| 17 | `onnx_stress_sim` | Graph | 56-node stress test with perf counters |
 
 ### Run Unit Tests (LLM Mode)
 
@@ -981,44 +1040,76 @@ cd sim/verilator/build
 ./onnx_smoke_sim --datadir graph
 ```
 
-Expected output:
-```
-=== ONNX Graph Mode Smoke Test ===
-  Loaded DDR image: 3146752 bytes
-  Loading 14 instructions from graph/program.bin
-  Loading 10 tensor descriptors from graph/tdesc.bin
-  Starting graph execution (14 instructions)...
-  DMA LOAD: ddr=0x00300000 sram=0x0020 len=512
-  DMA LOAD: ddr=0x00300300 sram=0x0000 len=32
-  ...
-  Graph execution DONE at cycle 2517
-PASS: All 8 bytes match golden!
-```
-
 **CNN Smoke Test** (Conv -> ReLU -> Flatten -> Gemm):
 
 ```bash
 cd npu
-
-# Generate the CNN ONNX model
 python3 python/onnx_compiler/gen_cnn_onnx.py
-
-# Compile to graph artifacts
 python3 python/onnx_compiler/compile.py \
     --model models/conv1x_mini.onnx \
     --outdir sim/verilator/build/graph_cnn
-
-# Run the smoke test
 cd sim/verilator/build
 ./onnx_cnn_smoke_sim --datadir graph_cnn
 ```
 
-Expected output:
+**Phase 3 Engine Tests** (Reduce, Math, Gather, Slice/Concat, BatchNorm+Pool):
+
+```bash
+cd npu
+
+# Generate and compile all Phase 3 test models
+python3 python/onnx_compiler/gen_reduce_onnx.py
+python3 python/onnx_compiler/compile.py --model models/reduce_test.onnx --outdir sim/verilator/build/graph_reduce
+
+python3 python/onnx_compiler/gen_math_onnx.py
+python3 python/onnx_compiler/compile.py --model models/math_test.onnx --outdir sim/verilator/build/graph_math
+
+python3 python/onnx_compiler/gen_gather_onnx.py
+python3 python/onnx_compiler/compile.py --model models/gather_test.onnx --outdir sim/verilator/build/graph_gather
+
+python3 python/onnx_compiler/gen_slice_concat_onnx.py
+python3 python/onnx_compiler/compile.py --model models/slice_concat_test.onnx --outdir sim/verilator/build/graph_slice_concat
+
+python3 python/onnx_compiler/gen_batchnorm_pool_onnx.py
+python3 python/onnx_compiler/compile.py --model models/batchnorm_pool_test.onnx --outdir sim/verilator/build/graph_bn_pool
+
+# Run all Phase 3 tests
+cd sim/verilator/build
+./onnx_reduce_sim --datadir graph_reduce
+./onnx_math_sim --datadir graph_math
+./onnx_gather_sim --datadir graph_gather
+./onnx_slice_concat_sim --datadir graph_slice_concat
+./onnx_batchnorm_pool_sim --datadir graph_bn_pool
 ```
-=== ONNX Graph Mode CNN Smoke Test ===
-  ...
-  Graph execution DONE at cycle 4781
-PASS: All 4 bytes match golden!
+
+**Fuzz Test** (50 random graphs):
+
+```bash
+cd npu
+
+# Generate 50 random ONNX models
+python3 python/onnx_compiler/gen_fuzz_onnx.py
+
+# Compile all 50 cases
+for i in $(seq 0 49); do
+    python3 python/onnx_compiler/compile.py \
+        --model models/fuzz/case_${i}.onnx \
+        --outdir sim/verilator/build/graph_fuzz/case_${i}
+done
+
+# Run fuzz test (loops over all 50 cases)
+cd sim/verilator/build
+./onnx_fuzz_sim --datadir graph_fuzz
+```
+
+**Stress Test** (56-node deep graph with perf counters):
+
+```bash
+cd npu
+python3 python/onnx_compiler/gen_stress_onnx.py
+python3 python/onnx_compiler/compile.py --model models/stress_test.onnx --outdir sim/verilator/build/graph_stress
+cd sim/verilator/build
+./onnx_stress_sim --datadir graph_stress
 ```
 
 ### Run KV Cache Correctness Test
@@ -1055,9 +1146,18 @@ cd npu/sim/verilator/build
 ./demo_infer --datadir demo_data --max-tokens 10
 ./demo_infer --datadir demo_data --max-tokens 10 --kv-cache
 
-# Graph Mode tests (needs ONNX model compilation)
+# Graph Mode Phase 2 (needs ONNX model compilation)
 ./onnx_smoke_sim --datadir graph
 ./onnx_cnn_smoke_sim --datadir graph_cnn
+
+# Graph Mode Phase 3 (needs Phase 3 model compilation)
+./onnx_reduce_sim --datadir graph_reduce
+./onnx_math_sim --datadir graph_math
+./onnx_gather_sim --datadir graph_gather
+./onnx_slice_concat_sim --datadir graph_slice_concat
+./onnx_batchnorm_pool_sim --datadir graph_bn_pool
+./onnx_fuzz_sim --datadir graph_fuzz
+./onnx_stress_sim --datadir graph_stress
 ```
 
 ### Debug with Waveforms
@@ -1117,10 +1217,10 @@ Improvements I want to make to the design:
 - [ ] Add FP16 accumulation mode for better dynamic range
 - [ ] FPGA synthesis and on-board demo (Xilinx Zynq / Artix-7)
 - [ ] Graph Mode: parallel engine execution (pipeline DMA with compute)
-- [ ] Graph Mode: more ONNX ops (MaxPool, BatchNorm, residual add)
 - [ ] Graph Mode: automatic SRAM tiling for models exceeding 64KB
 - [x] Support for more model architectures (LLaMA, Mistral, Qwen2 with GQA, RoPE, QKV bias)
 - [x] Graph Mode v1: ONNX compilation and execution (MLP, CNN with im2col)
+- [x] Graph Mode v2: 9 dedicated engines (Reduce, Math LUT, Gather, Slice, Concat, AvgPool2D), BatchNorm lowering, memory planner with reuse, perf counters, 50-model fuzz testing
 
 # Repository Structure
 
@@ -1146,12 +1246,22 @@ npu/
       addr_gen.sv              Address generation
       kv_ctrl.sv               KV cache controller FSM (SRAM0 <-> kv_cache_bank bridge)
     graph/                   Graph pipeline (Graph Mode)
-      graph_isa_pkg.sv         Graph ISA opcodes, instruction/descriptor structs
+      graph_isa_pkg.sv         Graph ISA opcodes (23 opcodes), instruction/descriptor structs
       graph_fetch.sv           Sequential instruction fetch from program SRAM
       graph_decode.sv          Combinational 128-bit -> graph_instr_t decode
-      graph_dispatch.sv        Main FSM: descriptor lookup, engine control, EW loops
-      graph_top.sv             Wrapper: fetch + decode + dispatch
+      graph_dispatch.sv        Main FSM: descriptor lookup, engine control, EW loops, perf counters
+      graph_top.sv             Wrapper: fetch + decode + dispatch + ew_busy
       tensor_table.sv          256-entry tensor descriptor register array
+      reduce_engine.sv         Reduce engine: Sum/Max/Mean with INT32 accumulator
+      math_engine.sv           Math engine: Exp/Log/Sqrt/Rsqrt via 256-entry LUTs
+      graph_exp_lut.sv         INT8 -> INT8 exponential lookup table
+      graph_log_lut.sv         INT8 -> INT8 logarithm lookup table
+      graph_sqrt_lut.sv        INT8 -> INT8 square root lookup table
+      graph_rsqrt_lut.sv       INT8 -> INT8 inverse square root lookup table
+      gather_engine.sv         Gather engine: axis-0 row copy with bounds check
+      slice_engine.sv          Slice engine: materialized N-D slice
+      concat_engine.sv         Concat engine: last-dimension interleave
+      avgpool2d_engine.sv      AvgPool2D engine: sliding window with INT32 accumulator
     mem/                     Memory subsystem
       sram_dp.sv               Dual-port SRAM primitive
       banked_sram.sv           Multi-bank SRAM wrapper
@@ -1182,10 +1292,10 @@ npu/
     ddr_graph.h                DDR memory map constants for Graph Mode
   sim/
     verilator/               Verilator simulation environment
-      CMakeLists.txt           Build system (10 targets)
+      CMakeLists.txt           Build system (17 targets)
       gpt2_block_top.sv        GPT-2 testbench top (SRAMs + ucode + engines)
       llama_block_top.sv       LLaMA testbench top (SRAMs + ucode + engines)
-      onnx_sim_top.sv          Graph Mode testbench top (SRAMs + graph pipeline + engines)
+      onnx_sim_top.sv          Graph Mode testbench top (SRAMs + graph pipeline + 9 engines)
       engine_tb_top.sv         Engine-level testbench wrapper
       integration_top.sv       Integration testbench wrapper
       tb_top.cpp               Target 1: Control plane smoke test
@@ -1198,6 +1308,13 @@ npu/
       tb_llama_demo_infer.cpp  Target 8: LLaMA inference demo
       tb_onnx_smoke.cpp        Target 9: MLP smoke test (Graph Mode)
       tb_onnx_cnn_smoke.cpp    Target 10: CNN smoke test (Graph Mode)
+      tb_onnx_reduce.cpp       Target 11: Reduce engine test
+      tb_onnx_math.cpp         Target 12: Math engine test
+      tb_onnx_gather.cpp       Target 13: Gather engine test
+      tb_onnx_slice_concat.cpp Target 14: Slice + Concat engine test
+      tb_onnx_batchnorm_pool.cpp Target 15: BatchNorm + AvgPool2D test
+      tb_onnx_fuzz.cpp         Target 16: 50-model fuzz test
+      tb_onnx_stress.cpp       Target 17: Stress test with perf counters
       run_demo.sh              Automated demo runner script
   python/
     golden/                  Python golden reference models
@@ -1230,12 +1347,26 @@ npu/
       compile.py               Main compiler: ONNX -> program.bin + tdesc.bin + ddr_image.bin
       gen_mlp_onnx.py          Generate MLP test model (32 -> 16 -> 8)
       gen_cnn_onnx.py          Generate CNN test model (Conv3x3 -> ReLU -> FC)
+      gen_reduce_onnx.py       Generate Reduce test model (ReduceSum + ReduceMax)
+      gen_math_onnx.py         Generate Math test model (Exp -> Log -> Sqrt)
+      gen_gather_onnx.py       Generate Gather test model (axis-0 row gather)
+      gen_slice_concat_onnx.py Generate Slice + Concat test model
+      gen_batchnorm_pool_onnx.py Generate BatchNorm + AvgPool test model
+      gen_fuzz_onnx.py         Generate 50 random fuzz models
+      gen_stress_onnx.py       Generate 56-node stress model
     tests/
       test_end2end.py          Python-level end-to-end tests
     requirements.txt           Python dependencies
   models/                    Generated ONNX models (by gen_*.py scripts)
     mlp_32_16_8.onnx           MLP test model
     conv1x_mini.onnx           CNN test model
+    reduce_test.onnx           Reduce test model
+    math_test.onnx             Math test model
+    gather_test.onnx           Gather test model
+    slice_concat_test.onnx     Slice + Concat test model
+    batchnorm_pool_test.onnx   BatchNorm + AvgPool test model
+    stress_test.onnx           Stress test model
+    fuzz/                      50 random fuzz models (case_0.onnx .. case_49.onnx)
   README.md                  This file
 ```
 

@@ -68,6 +68,55 @@ def gen_silu_lut(input_scale=32.0):
         lut[i] = np.clip(int(round(result)), -128, 127)
     return lut
 
+def gen_graph_exp_lut(input_scale=32.0):
+    """Generate graph-mode exp LUT: int8 -> int8.
+    LUT[i] = clamp(round(exp(signed_i / scale) * scale), -128, 127)"""
+    lut = np.zeros(256, dtype=np.int8)
+    for i in range(256):
+        signed_i = float(np.array(i, dtype=np.uint8).view(np.int8))
+        x = signed_i / input_scale
+        val = np.exp(x) * input_scale
+        lut[i] = np.clip(int(round(val)), -128, 127)
+    return lut
+
+def gen_graph_log_lut(input_scale=32.0):
+    """Generate graph-mode log LUT: int8 -> int8.
+    LUT[i] = clamp(round(log(max(signed_i / scale, eps)) * scale), -128, 127)"""
+    lut = np.zeros(256, dtype=np.int8)
+    eps = 1e-6
+    for i in range(256):
+        signed_i = float(np.array(i, dtype=np.uint8).view(np.int8))
+        x = signed_i / input_scale
+        val = np.log(max(x, eps)) * input_scale
+        lut[i] = np.clip(int(round(val)), -128, 127)
+    return lut
+
+def gen_graph_sqrt_lut(input_scale=32.0):
+    """Generate graph-mode sqrt LUT: int8 -> int8.
+    LUT[i] = clamp(round(sqrt(max(signed_i / scale, 0)) * scale), -128, 127)"""
+    lut = np.zeros(256, dtype=np.int8)
+    for i in range(256):
+        signed_i = float(np.array(i, dtype=np.uint8).view(np.int8))
+        x = signed_i / input_scale
+        val = np.sqrt(max(x, 0)) * input_scale
+        lut[i] = np.clip(int(round(val)), -128, 127)
+    return lut
+
+def gen_graph_rsqrt_lut(input_scale=32.0):
+    """Generate graph-mode rsqrt LUT: int8 -> int8.
+    LUT[i] = clamp(round(rsqrt(max(signed_i / scale, eps)) * scale), -128, 127)"""
+    lut = np.zeros(256, dtype=np.int8)
+    eps = 1e-6
+    for i in range(256):
+        signed_i = float(np.array(i, dtype=np.uint8).view(np.int8))
+        x = signed_i / input_scale
+        if x > 0:
+            val = (1.0 / np.sqrt(x)) * input_scale
+        else:
+            val = (1.0 / np.sqrt(eps)) * input_scale
+        lut[i] = np.clip(int(round(val)), -128, 127)
+    return lut
+
 def gen_rope_tables(max_seq=16, head_dim=16, base=10000.0):
     """Generate RoPE sin/cos tables: int8 Q1.7 format.
     Returns (sin_table, cos_table), each [max_seq, head_dim//2]."""
@@ -139,6 +188,10 @@ def main():
         ('rsqrt_lut', gen_rsqrt_lut(), 16),
         ('gelu_lut', gen_gelu_lut(), 8),
         ('silu_lut', gen_silu_lut(), 8),
+        ('graph_exp_lut', gen_graph_exp_lut(), 8),
+        ('graph_log_lut', gen_graph_log_lut(), 8),
+        ('graph_sqrt_lut', gen_graph_sqrt_lut(), 8),
+        ('graph_rsqrt_lut', gen_graph_rsqrt_lut(), 8),
     ]
 
     for name, data, width in luts:

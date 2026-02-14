@@ -90,6 +90,20 @@ set(SV_GRAPH
     ${RTL_DIR}/graph/graph_top.sv
 )
 
+# Phase 3 graph engines
+set(SV_GRAPH_P3
+    ${RTL_DIR}/graph/reduce_engine.sv
+    ${RTL_DIR}/graph/graph_exp_lut.sv
+    ${RTL_DIR}/graph/graph_log_lut.sv
+    ${RTL_DIR}/graph/graph_sqrt_lut.sv
+    ${RTL_DIR}/graph/graph_rsqrt_lut.sv
+    ${RTL_DIR}/graph/math_engine.sv
+    ${RTL_DIR}/graph/gather_engine.sv
+    ${RTL_DIR}/graph/slice_engine.sv
+    ${RTL_DIR}/graph/concat_engine.sv
+    ${RTL_DIR}/graph/avgpool2d_engine.sv
+)
+
 # ---- Target 1: Control Plane Smoke Test (original top-level) ----
 add_executable(npu_sim tb_top.cpp)
 
@@ -195,7 +209,7 @@ verilate(llama_demo_infer
 add_executable(onnx_smoke_sim tb_onnx_smoke.cpp)
 
 verilate(onnx_smoke_sim
-    SOURCES ${SV_COMMON} ${SV_GRAPH}
+    SOURCES ${SV_COMMON} ${SV_GRAPH} ${SV_GRAPH_P3}
         ${RTL_DIR}/gemm/gemm_ctrl.sv
         ${SIM_DIR}/onnx_sim_top.sv
     TOP_MODULE onnx_sim_top
@@ -208,7 +222,98 @@ verilate(onnx_smoke_sim
 add_executable(onnx_cnn_smoke_sim tb_onnx_cnn_smoke.cpp)
 
 verilate(onnx_cnn_smoke_sim
-    SOURCES ${SV_COMMON} ${SV_GRAPH}
+    SOURCES ${SV_COMMON} ${SV_GRAPH} ${SV_GRAPH_P3}
+        ${RTL_DIR}/gemm/gemm_ctrl.sv
+        ${SIM_DIR}/onnx_sim_top.sv
+    TOP_MODULE onnx_sim_top
+    PREFIX Vonnx_sim_top
+    VERILATOR_ARGS ${VERILATOR_COMMON_ARGS}
+        -GSRAM0_DEPTH=65536
+)
+
+# ---- Target 11: ONNX Reduce Engine Test ----
+add_executable(onnx_reduce_sim tb_onnx_reduce.cpp)
+
+verilate(onnx_reduce_sim
+    SOURCES ${SV_COMMON} ${SV_GRAPH} ${SV_GRAPH_P3}
+        ${RTL_DIR}/gemm/gemm_ctrl.sv
+        ${SIM_DIR}/onnx_sim_top.sv
+    TOP_MODULE onnx_sim_top
+    PREFIX Vonnx_sim_top
+    VERILATOR_ARGS ${VERILATOR_COMMON_ARGS}
+        -GSRAM0_DEPTH=65536
+)
+
+# ---- Target 12: ONNX Math Engine Test ----
+add_executable(onnx_math_sim tb_onnx_math.cpp)
+
+verilate(onnx_math_sim
+    SOURCES ${SV_COMMON} ${SV_GRAPH} ${SV_GRAPH_P3}
+        ${RTL_DIR}/gemm/gemm_ctrl.sv
+        ${SIM_DIR}/onnx_sim_top.sv
+    TOP_MODULE onnx_sim_top
+    PREFIX Vonnx_sim_top
+    VERILATOR_ARGS ${VERILATOR_COMMON_ARGS}
+        -GSRAM0_DEPTH=65536
+)
+
+# ---- Target 13: ONNX Gather Engine Test ----
+add_executable(onnx_gather_sim tb_onnx_gather.cpp)
+
+verilate(onnx_gather_sim
+    SOURCES ${SV_COMMON} ${SV_GRAPH} ${SV_GRAPH_P3}
+        ${RTL_DIR}/gemm/gemm_ctrl.sv
+        ${SIM_DIR}/onnx_sim_top.sv
+    TOP_MODULE onnx_sim_top
+    PREFIX Vonnx_sim_top
+    VERILATOR_ARGS ${VERILATOR_COMMON_ARGS}
+        -GSRAM0_DEPTH=65536
+)
+
+# ---- Target 14: ONNX Slice+Concat Engine Test ----
+add_executable(onnx_slice_concat_sim tb_onnx_slice_concat.cpp)
+
+verilate(onnx_slice_concat_sim
+    SOURCES ${SV_COMMON} ${SV_GRAPH} ${SV_GRAPH_P3}
+        ${RTL_DIR}/gemm/gemm_ctrl.sv
+        ${SIM_DIR}/onnx_sim_top.sv
+    TOP_MODULE onnx_sim_top
+    PREFIX Vonnx_sim_top
+    VERILATOR_ARGS ${VERILATOR_COMMON_ARGS}
+        -GSRAM0_DEPTH=65536
+)
+
+# ---- Target 15: ONNX BatchNorm+Pool Test ----
+add_executable(onnx_batchnorm_pool_sim tb_onnx_batchnorm_pool.cpp)
+
+verilate(onnx_batchnorm_pool_sim
+    SOURCES ${SV_COMMON} ${SV_GRAPH} ${SV_GRAPH_P3}
+        ${RTL_DIR}/gemm/gemm_ctrl.sv
+        ${SIM_DIR}/onnx_sim_top.sv
+    TOP_MODULE onnx_sim_top
+    PREFIX Vonnx_sim_top
+    VERILATOR_ARGS ${VERILATOR_COMMON_ARGS}
+        -GSRAM0_DEPTH=65536
+)
+
+# ---- Target 16: ONNX Fuzz Test ----
+add_executable(onnx_fuzz_sim tb_onnx_fuzz.cpp)
+
+verilate(onnx_fuzz_sim
+    SOURCES ${SV_COMMON} ${SV_GRAPH} ${SV_GRAPH_P3}
+        ${RTL_DIR}/gemm/gemm_ctrl.sv
+        ${SIM_DIR}/onnx_sim_top.sv
+    TOP_MODULE onnx_sim_top
+    PREFIX Vonnx_sim_top
+    VERILATOR_ARGS ${VERILATOR_COMMON_ARGS}
+        -GSRAM0_DEPTH=65536
+)
+
+# ---- Target 17: ONNX Stress Test ----
+add_executable(onnx_stress_sim tb_onnx_stress.cpp)
+
+verilate(onnx_stress_sim
+    SOURCES ${SV_COMMON} ${SV_GRAPH} ${SV_GRAPH_P3}
         ${RTL_DIR}/gemm/gemm_ctrl.sv
         ${SIM_DIR}/onnx_sim_top.sv
     TOP_MODULE onnx_sim_top

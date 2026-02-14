@@ -22,6 +22,20 @@ package graph_isa_pkg;
     parameter logic [7:0] OP_G_RELU         = 8'h38;
     parameter logic [7:0] OP_G_SOFTMAX      = 8'h40;
 
+    // Phase 3 opcodes
+    parameter logic [7:0] OP_G_REDUCE_SUM   = 8'h50;
+    parameter logic [7:0] OP_G_REDUCE_MAX   = 8'h51;
+    parameter logic [7:0] OP_G_REDUCE_MEAN  = 8'h52;
+    parameter logic [7:0] OP_G_EXP          = 8'h58;
+    parameter logic [7:0] OP_G_LOG          = 8'h59;
+    parameter logic [7:0] OP_G_SQRT         = 8'h5A;
+    parameter logic [7:0] OP_G_RSQRT        = 8'h5B;
+    parameter logic [7:0] OP_G_GATHER       = 8'h60;
+    parameter logic [7:0] OP_G_SLICE        = 8'h68;
+    parameter logic [7:0] OP_G_CONCAT       = 8'h69;
+    parameter logic [7:0] OP_G_PAD          = 8'h6A;
+    parameter logic [7:0] OP_G_AVGPOOL2D    = 8'h70;
+
     // =========================================================================
     // Graph ISA Instruction Format (128-bit)
     //   word0[31:0]:  { src0[7:0], dst[7:0], flags[7:0], opcode[7:0] }
@@ -75,6 +89,7 @@ package graph_isa_pkg;
     parameter logic [7:0] GERR_NONE           = 8'h00;
     parameter logic [7:0] GERR_BAD_OPCODE     = 8'h01;
     parameter logic [7:0] GERR_SHAPE_MISMATCH = 8'h02;
+    parameter logic [7:0] GERR_TIMEOUT        = 8'h03;
 
     // =========================================================================
     // Graph dispatch status bits

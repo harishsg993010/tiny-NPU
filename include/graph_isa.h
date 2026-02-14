@@ -25,6 +25,20 @@ static constexpr uint8_t OP_G_EW_SUB       = 0x32;
 static constexpr uint8_t OP_G_RELU         = 0x38;
 static constexpr uint8_t OP_G_SOFTMAX      = 0x40;
 
+// Phase 3 opcodes
+static constexpr uint8_t OP_G_REDUCE_SUM   = 0x50;
+static constexpr uint8_t OP_G_REDUCE_MAX   = 0x51;
+static constexpr uint8_t OP_G_REDUCE_MEAN  = 0x52;
+static constexpr uint8_t OP_G_EXP          = 0x58;
+static constexpr uint8_t OP_G_LOG          = 0x59;
+static constexpr uint8_t OP_G_SQRT         = 0x5A;
+static constexpr uint8_t OP_G_RSQRT        = 0x5B;
+static constexpr uint8_t OP_G_GATHER       = 0x60;
+static constexpr uint8_t OP_G_SLICE        = 0x68;
+static constexpr uint8_t OP_G_CONCAT       = 0x69;
+static constexpr uint8_t OP_G_PAD          = 0x6A;
+static constexpr uint8_t OP_G_AVGPOOL2D    = 0x70;
+
 // =========================================================================
 // GEMM flags (matches isa_pkg.sv FLAG_* constants)
 // =========================================================================

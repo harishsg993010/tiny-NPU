@@ -1,9 +1,10 @@
 // =============================================================================
 // onnx_sim_top.sv - Graph Mode simulation wrapper
 // Contains: program SRAM, tensor table, SRAM0 (65536), ACC SRAM, scratch SRAM,
-//           gemm_ctrl, systolic_array, softmax_engine, graph pipeline, DMA shim
+//           gemm_ctrl, systolic_array, softmax_engine, graph pipeline, DMA shim,
+//           Phase 3 engines: reduce, math, gather, slice, concat, avgpool2d
 //
-// SRAM0 mux priority: graph_dispatch_ew > gemm > softmax > TB
+// SRAM0 mux priority: gp_ew > gm > sm > re > me > ga > sl > ct > ap > tb
 // =============================================================================
 `default_nettype none
 
@@ -55,6 +56,19 @@ module onnx_sim_top
     output wire  [15:0]        dma_count,
     output wire  [15:0]        dma_block_len,
     input  wire                dma_done_pulse,
+
+    // --- Performance counters (exposed to C++) ---
+    output wire  [31:0]        perf_total_cycles,
+    output wire  [31:0]        perf_gemm_cycles,
+    output wire  [31:0]        perf_softmax_cycles,
+    output wire  [31:0]        perf_dma_cycles,
+    output wire  [31:0]        perf_reduce_cycles,
+    output wire  [31:0]        perf_math_cycles,
+    output wire  [31:0]        perf_gather_cycles,
+    output wire  [31:0]        perf_slice_cycles,
+    output wire  [31:0]        perf_concat_cycles,
+    output wire  [31:0]        perf_avgpool_cycles,
+    output wire  [31:0]        perf_ew_cycles,
 
     // --- Debug ---
     output wire  [31:0]        graph_status,
@@ -223,7 +237,7 @@ module onnx_sim_top
         .length          (gp_sm_length),
         .src_base        (gp_sm_src_base),
         .dst_base        (gp_sm_dst_base),
-        .scale_factor    (16'd256),  // 1.0 in Q8.8
+        .scale_factor    (16'd256),
         .causal_mask_en  (1'b0),
         .causal_limit    (16'd0),
         .sram_rd_en      (sm_rd_en),
@@ -258,6 +272,195 @@ module onnx_sim_top
     );
 
     // ================================================================
+    // Phase 3 Engines
+    // ================================================================
+
+    // --- Reduce Engine ---
+    logic        re_busy, re_done;
+    logic        re_rd_en, re_wr_en;
+    logic [SRAM0_AW-1:0] re_rd_addr, re_wr_addr;
+    logic [7:0]  re_wr_data;
+
+    logic        gp_re_cmd_valid;
+    logic [7:0]  gp_re_cmd_opcode;
+    logic [15:0] gp_re_cmd_src_base, gp_re_cmd_dst_base;
+    logic [15:0] gp_re_cmd_reduce_dim, gp_re_cmd_outer_count;
+
+    reduce_engine #(.SRAM0_AW(SRAM0_AW)) u_reduce (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .cmd_valid      (gp_re_cmd_valid),
+        .cmd_opcode     (gp_re_cmd_opcode),
+        .cmd_src_base   (gp_re_cmd_src_base),
+        .cmd_dst_base   (gp_re_cmd_dst_base),
+        .cmd_reduce_dim (gp_re_cmd_reduce_dim),
+        .cmd_outer_count(gp_re_cmd_outer_count),
+        .sram_rd_en     (re_rd_en),
+        .sram_rd_addr   (re_rd_addr),
+        .sram_rd_data   (s0_a_dout),
+        .sram_wr_en     (re_wr_en),
+        .sram_wr_addr   (re_wr_addr),
+        .sram_wr_data   (re_wr_data),
+        .busy           (re_busy),
+        .done           (re_done)
+    );
+
+    // --- Math Engine ---
+    logic        me_busy, me_done;
+    logic        me_rd_en, me_wr_en;
+    logic [SRAM0_AW-1:0] me_rd_addr, me_wr_addr;
+    logic [7:0]  me_wr_data;
+
+    logic        gp_me_cmd_valid;
+    logic [7:0]  gp_me_cmd_opcode;
+    logic [15:0] gp_me_cmd_src_base, gp_me_cmd_dst_base, gp_me_cmd_length;
+
+    math_engine #(.SRAM0_AW(SRAM0_AW)) u_math (
+        .clk          (clk),
+        .rst_n        (rst_n),
+        .cmd_valid    (gp_me_cmd_valid),
+        .cmd_opcode   (gp_me_cmd_opcode),
+        .cmd_src_base (gp_me_cmd_src_base),
+        .cmd_dst_base (gp_me_cmd_dst_base),
+        .cmd_length   (gp_me_cmd_length),
+        .sram_rd_en   (me_rd_en),
+        .sram_rd_addr (me_rd_addr),
+        .sram_rd_data (s0_a_dout),
+        .sram_wr_en   (me_wr_en),
+        .sram_wr_addr (me_wr_addr),
+        .sram_wr_data (me_wr_data),
+        .busy         (me_busy),
+        .done         (me_done)
+    );
+
+    // --- Gather Engine ---
+    logic        ga_busy, ga_done;
+    logic        ga_rd_en, ga_wr_en;
+    logic [SRAM0_AW-1:0] ga_rd_addr, ga_wr_addr;
+    logic [7:0]  ga_wr_data;
+
+    logic        gp_ga_cmd_valid;
+    logic [15:0] gp_ga_cmd_src_base, gp_ga_cmd_idx_base, gp_ga_cmd_dst_base;
+    logic [15:0] gp_ga_cmd_num_indices, gp_ga_cmd_row_size, gp_ga_cmd_num_rows;
+
+    gather_engine #(.SRAM0_AW(SRAM0_AW)) u_gather (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .cmd_valid      (gp_ga_cmd_valid),
+        .cmd_src_base   (gp_ga_cmd_src_base),
+        .cmd_idx_base   (gp_ga_cmd_idx_base),
+        .cmd_dst_base   (gp_ga_cmd_dst_base),
+        .cmd_num_indices(gp_ga_cmd_num_indices),
+        .cmd_row_size   (gp_ga_cmd_row_size),
+        .cmd_num_rows   (gp_ga_cmd_num_rows),
+        .sram_rd_en     (ga_rd_en),
+        .sram_rd_addr   (ga_rd_addr),
+        .sram_rd_data   (s0_a_dout),
+        .sram_wr_en     (ga_wr_en),
+        .sram_wr_addr   (ga_wr_addr),
+        .sram_wr_data   (ga_wr_data),
+        .busy           (ga_busy),
+        .done           (ga_done)
+    );
+
+    // --- Slice Engine ---
+    logic        sl_busy, sl_done;
+    logic        sl_rd_en, sl_wr_en;
+    logic [SRAM0_AW-1:0] sl_rd_addr, sl_wr_addr;
+    logic [7:0]  sl_wr_data;
+
+    logic        gp_sl_cmd_valid;
+    logic [15:0] gp_sl_cmd_src_base, gp_sl_cmd_dst_base;
+    logic [15:0] gp_sl_cmd_src_row_len, gp_sl_cmd_dst_row_len;
+    logic [15:0] gp_sl_cmd_start_offset, gp_sl_cmd_num_rows;
+
+    slice_engine #(.SRAM0_AW(SRAM0_AW)) u_slice (
+        .clk             (clk),
+        .rst_n           (rst_n),
+        .cmd_valid       (gp_sl_cmd_valid),
+        .cmd_src_base    (gp_sl_cmd_src_base),
+        .cmd_dst_base    (gp_sl_cmd_dst_base),
+        .cmd_src_row_len (gp_sl_cmd_src_row_len),
+        .cmd_dst_row_len (gp_sl_cmd_dst_row_len),
+        .cmd_start_offset(gp_sl_cmd_start_offset),
+        .cmd_num_rows    (gp_sl_cmd_num_rows),
+        .sram_rd_en      (sl_rd_en),
+        .sram_rd_addr    (sl_rd_addr),
+        .sram_rd_data    (s0_a_dout),
+        .sram_wr_en      (sl_wr_en),
+        .sram_wr_addr    (sl_wr_addr),
+        .sram_wr_data    (sl_wr_data),
+        .busy            (sl_busy),
+        .done            (sl_done)
+    );
+
+    // --- Concat Engine ---
+    logic        ct_busy, ct_done;
+    logic        ct_rd_en, ct_wr_en;
+    logic [SRAM0_AW-1:0] ct_rd_addr, ct_wr_addr;
+    logic [7:0]  ct_wr_data;
+
+    logic        gp_ct_cmd_valid;
+    logic [15:0] gp_ct_cmd_src0_base, gp_ct_cmd_src1_base, gp_ct_cmd_dst_base;
+    logic [15:0] gp_ct_cmd_src0_row_len, gp_ct_cmd_src1_row_len, gp_ct_cmd_num_rows;
+
+    concat_engine #(.SRAM0_AW(SRAM0_AW)) u_concat (
+        .clk              (clk),
+        .rst_n            (rst_n),
+        .cmd_valid        (gp_ct_cmd_valid),
+        .cmd_src0_base    (gp_ct_cmd_src0_base),
+        .cmd_src1_base    (gp_ct_cmd_src1_base),
+        .cmd_dst_base     (gp_ct_cmd_dst_base),
+        .cmd_src0_row_len (gp_ct_cmd_src0_row_len),
+        .cmd_src1_row_len (gp_ct_cmd_src1_row_len),
+        .cmd_num_rows     (gp_ct_cmd_num_rows),
+        .sram_rd_en       (ct_rd_en),
+        .sram_rd_addr     (ct_rd_addr),
+        .sram_rd_data     (s0_a_dout),
+        .sram_wr_en       (ct_wr_en),
+        .sram_wr_addr     (ct_wr_addr),
+        .sram_wr_data     (ct_wr_data),
+        .busy             (ct_busy),
+        .done             (ct_done)
+    );
+
+    // --- AvgPool2D Engine ---
+    logic        ap_rd_en;
+    logic [SRAM0_AW-1:0] ap_rd_addr;
+    logic        ap_wr_en;
+    logic [SRAM0_AW-1:0] ap_wr_addr;
+    logic [7:0]  ap_wr_data;
+    logic        ap_done;
+
+    logic        ap_cmd_valid;
+    logic [15:0] ap_cmd_src_base, ap_cmd_dst_base;
+    logic [15:0] ap_cmd_C, ap_cmd_H, ap_cmd_W;
+    logic [7:0]  ap_cmd_kh, ap_cmd_kw, ap_cmd_sh, ap_cmd_sw;
+
+    avgpool2d_engine #(.SRAM0_AW(SRAM0_AW)) u_avgpool2d (
+        .clk           (clk),
+        .rst_n         (rst_n),
+        .cmd_valid     (ap_cmd_valid),
+        .cmd_src_base  (ap_cmd_src_base),
+        .cmd_dst_base  (ap_cmd_dst_base),
+        .cmd_C         (ap_cmd_C),
+        .cmd_H         (ap_cmd_H),
+        .cmd_W         (ap_cmd_W),
+        .cmd_kh        (ap_cmd_kh),
+        .cmd_kw        (ap_cmd_kw),
+        .cmd_sh        (ap_cmd_sh),
+        .cmd_sw        (ap_cmd_sw),
+        .sram_rd_en    (ap_rd_en),
+        .sram_rd_addr  (ap_rd_addr),
+        .sram_rd_data  (s0_a_dout),
+        .sram_wr_en    (ap_wr_en),
+        .sram_wr_addr  (ap_wr_addr),
+        .sram_wr_data  (ap_wr_data),
+        .busy          (),
+        .done          (ap_done)
+    );
+
+    // ================================================================
     // Graph Pipeline (graph_top)
     // ================================================================
     logic        gp_ew_rd_en, gp_ew_wr_en;
@@ -277,6 +480,11 @@ module onnx_sim_top
     logic [15:0] gp_pc;
     logic [7:0]  gp_last_op;
 
+    // Perf counter wires
+    logic [31:0] gp_perf_total, gp_perf_gemm, gp_perf_softmax, gp_perf_dma;
+    logic [31:0] gp_perf_reduce, gp_perf_math, gp_perf_gather;
+    logic [31:0] gp_perf_slice, gp_perf_concat, gp_perf_avgpool, gp_perf_ew;
+
     graph_top #(
         .PROG_SRAM_AW (PROG_AW),
         .SRAM0_AW     (SRAM0_AW)
@@ -294,6 +502,7 @@ module onnx_sim_top
         .td_rd1_data   (td_rd1_data),
         .td_rd2_addr   (td_rd2_addr),
         .td_rd2_data   (td_rd2_data),
+        // GEMM
         .gm_cmd_valid  (gp_gm_cmd_valid),
         .gm_cmd_src0   (gp_gm_cmd_src0),
         .gm_cmd_src1   (gp_gm_cmd_src1),
@@ -304,11 +513,68 @@ module onnx_sim_top
         .gm_cmd_flags  (gp_gm_cmd_flags),
         .gm_cmd_imm    (gp_gm_cmd_imm),
         .gm_done       (gm_done),
+        // Softmax
         .sm_cmd_valid  (gp_sm_cmd_valid),
         .sm_src_base   (gp_sm_src_base),
         .sm_dst_base   (gp_sm_dst_base),
         .sm_length     (gp_sm_length),
         .sm_done       (sm_done),
+        // Reduce
+        .re_cmd_valid      (gp_re_cmd_valid),
+        .re_cmd_opcode     (gp_re_cmd_opcode),
+        .re_cmd_src_base   (gp_re_cmd_src_base),
+        .re_cmd_dst_base   (gp_re_cmd_dst_base),
+        .re_cmd_reduce_dim (gp_re_cmd_reduce_dim),
+        .re_cmd_outer_count(gp_re_cmd_outer_count),
+        .re_done           (re_done),
+        // Math
+        .me_cmd_valid  (gp_me_cmd_valid),
+        .me_cmd_opcode (gp_me_cmd_opcode),
+        .me_cmd_src_base(gp_me_cmd_src_base),
+        .me_cmd_dst_base(gp_me_cmd_dst_base),
+        .me_cmd_length (gp_me_cmd_length),
+        .me_done       (me_done),
+        // Gather
+        .ga_cmd_valid      (gp_ga_cmd_valid),
+        .ga_cmd_src_base   (gp_ga_cmd_src_base),
+        .ga_cmd_idx_base   (gp_ga_cmd_idx_base),
+        .ga_cmd_dst_base   (gp_ga_cmd_dst_base),
+        .ga_cmd_num_indices(gp_ga_cmd_num_indices),
+        .ga_cmd_row_size   (gp_ga_cmd_row_size),
+        .ga_cmd_num_rows   (gp_ga_cmd_num_rows),
+        .ga_done           (ga_done),
+        // Slice
+        .sl_cmd_valid      (gp_sl_cmd_valid),
+        .sl_cmd_src_base   (gp_sl_cmd_src_base),
+        .sl_cmd_dst_base   (gp_sl_cmd_dst_base),
+        .sl_cmd_src_row_len(gp_sl_cmd_src_row_len),
+        .sl_cmd_dst_row_len(gp_sl_cmd_dst_row_len),
+        .sl_cmd_start_offset(gp_sl_cmd_start_offset),
+        .sl_cmd_num_rows   (gp_sl_cmd_num_rows),
+        .sl_done           (sl_done),
+        // Concat
+        .ct_cmd_valid      (gp_ct_cmd_valid),
+        .ct_cmd_src0_base  (gp_ct_cmd_src0_base),
+        .ct_cmd_src1_base  (gp_ct_cmd_src1_base),
+        .ct_cmd_dst_base   (gp_ct_cmd_dst_base),
+        .ct_cmd_src0_row_len(gp_ct_cmd_src0_row_len),
+        .ct_cmd_src1_row_len(gp_ct_cmd_src1_row_len),
+        .ct_cmd_num_rows   (gp_ct_cmd_num_rows),
+        .ct_done           (ct_done),
+        // AvgPool2D
+        .ap_cmd_valid     (ap_cmd_valid),
+        .ap_cmd_src_base  (ap_cmd_src_base),
+        .ap_cmd_dst_base  (ap_cmd_dst_base),
+        .ap_cmd_C         (ap_cmd_C),
+        .ap_cmd_H         (ap_cmd_H),
+        .ap_cmd_W         (ap_cmd_W),
+        .ap_cmd_kh        (ap_cmd_kh),
+        .ap_cmd_kw        (ap_cmd_kw),
+        .ap_cmd_sh        (ap_cmd_sh),
+        .ap_cmd_sw        (ap_cmd_sw),
+        .ap_done          (ap_done),
+        .perf_avgpool_cycles (gp_perf_avgpool),
+        // DMA
         .dma_cmd_valid (gp_dma_cmd_valid),
         .dma_ddr_addr  (gp_dma_ddr_addr),
         .dma_sram_addr (gp_dma_sram_addr),
@@ -319,6 +585,7 @@ module onnx_sim_top
         .dma_count     (gp_dma_count),
         .dma_block_len (gp_dma_block_len),
         .dma_done      (dma_done_internal),
+        // EW SRAM
         .ew_rd_en      (gp_ew_rd_en),
         .ew_rd_addr    (gp_ew_rd_addr),
         .ew_rd_data    (s0_a_dout),
@@ -326,6 +593,18 @@ module onnx_sim_top
         .ew_wr_addr    (gp_ew_wr_addr),
         .ew_wr_data    (gp_ew_wr_data),
         .ew_busy       (gp_ew_busy),
+        // Perf counters
+        .perf_total_cycles  (gp_perf_total),
+        .perf_gemm_cycles   (gp_perf_gemm),
+        .perf_softmax_cycles(gp_perf_softmax),
+        .perf_dma_cycles    (gp_perf_dma),
+        .perf_reduce_cycles (gp_perf_reduce),
+        .perf_math_cycles   (gp_perf_math),
+        .perf_gather_cycles (gp_perf_gather),
+        .perf_slice_cycles  (gp_perf_slice),
+        .perf_concat_cycles (gp_perf_concat),
+        .perf_ew_cycles     (gp_perf_ew),
+        // Status
         .graph_done    (gp_done),
         .graph_busy    (gp_busy),
         .graph_status  (gp_status),
@@ -390,7 +669,7 @@ module onnx_sim_top
 
     // ================================================================
     // DATA SRAM0 (8-bit x SRAM0_DEPTH)
-    // Mux priority: graph_dispatch_ew > gemm > softmax > TB
+    // Mux priority: gp_ew > gm > sm > re > me > ga > sl > ct > ap > tb
     // ================================================================
     logic                 s0_a_en;
     logic [SRAM0_AW-1:0] s0_a_addr;
@@ -410,6 +689,24 @@ module onnx_sim_top
         end else if (sm_busy) begin
             s0_a_en   = sm_rd_en;
             s0_a_addr = sm_rd_addr[SRAM0_AW-1:0];
+        end else if (re_busy) begin
+            s0_a_en   = re_rd_en;
+            s0_a_addr = re_rd_addr;
+        end else if (me_busy) begin
+            s0_a_en   = me_rd_en;
+            s0_a_addr = me_rd_addr;
+        end else if (ga_busy) begin
+            s0_a_en   = ga_rd_en;
+            s0_a_addr = ga_rd_addr;
+        end else if (sl_busy) begin
+            s0_a_en   = sl_rd_en;
+            s0_a_addr = sl_rd_addr;
+        end else if (ct_busy) begin
+            s0_a_en   = ct_rd_en;
+            s0_a_addr = ct_rd_addr;
+        end else if (ap_rd_en) begin
+            s0_a_en   = 1'b1;
+            s0_a_addr = ap_rd_addr;
         end else begin
             s0_a_en   = tb_sram0_rd_en;
             s0_a_addr = tb_sram0_rd_addr;
@@ -433,6 +730,36 @@ module onnx_sim_top
             s0_b_we   = sm_wr_en;
             s0_b_addr = sm_wr_addr[SRAM0_AW-1:0];
             s0_b_din  = sm_wr_data;
+        end else if (re_busy) begin
+            s0_b_en   = re_wr_en;
+            s0_b_we   = re_wr_en;
+            s0_b_addr = re_wr_addr;
+            s0_b_din  = re_wr_data;
+        end else if (me_busy) begin
+            s0_b_en   = me_wr_en;
+            s0_b_we   = me_wr_en;
+            s0_b_addr = me_wr_addr;
+            s0_b_din  = me_wr_data;
+        end else if (ga_busy) begin
+            s0_b_en   = ga_wr_en;
+            s0_b_we   = ga_wr_en;
+            s0_b_addr = ga_wr_addr;
+            s0_b_din  = ga_wr_data;
+        end else if (sl_busy) begin
+            s0_b_en   = sl_wr_en;
+            s0_b_we   = sl_wr_en;
+            s0_b_addr = sl_wr_addr;
+            s0_b_din  = sl_wr_data;
+        end else if (ct_busy) begin
+            s0_b_en   = ct_wr_en;
+            s0_b_we   = ct_wr_en;
+            s0_b_addr = ct_wr_addr;
+            s0_b_din  = ct_wr_data;
+        end else if (ap_wr_en) begin
+            s0_b_en   = 1'b1;
+            s0_b_we   = 1'b1;
+            s0_b_addr = ap_wr_addr;
+            s0_b_din  = ap_wr_data;
         end else begin
             s0_b_en   = tb_sram0_wr_en;
             s0_b_we   = tb_sram0_wr_en;
@@ -467,6 +794,19 @@ module onnx_sim_top
     assign graph_status  = gp_status;
     assign graph_pc      = gp_pc;
     assign graph_last_op = gp_last_op;
+
+    // Performance counters
+    assign perf_total_cycles   = gp_perf_total;
+    assign perf_gemm_cycles    = gp_perf_gemm;
+    assign perf_softmax_cycles = gp_perf_softmax;
+    assign perf_dma_cycles     = gp_perf_dma;
+    assign perf_reduce_cycles  = gp_perf_reduce;
+    assign perf_math_cycles    = gp_perf_math;
+    assign perf_gather_cycles  = gp_perf_gather;
+    assign perf_slice_cycles   = gp_perf_slice;
+    assign perf_concat_cycles  = gp_perf_concat;
+    assign perf_avgpool_cycles = gp_perf_avgpool;
+    assign perf_ew_cycles      = gp_perf_ew;
 
 endmodule
 
