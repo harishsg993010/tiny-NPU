@@ -899,8 +899,10 @@ pip3 install onnx
 
 ### Build
 
+All commands below are run from the repository root.
+
 ```bash
-cd npu/sim/verilator
+cd sim/verilator
 mkdir -p build && cd build
 cmake ..
 cmake --build . -j$(nproc)
@@ -937,7 +939,7 @@ This builds 21 simulation targets:
 Targets 1-4 use built-in test vectors and require no external data:
 
 ```bash
-cd npu/sim/verilator/build
+cd sim/verilator/build
 
 ./npu_sim             # Control plane smoke test
 ./engine_sim          # Engine compute tests (GEMM, Softmax, LN, GELU, Vec, DMA)
@@ -952,7 +954,7 @@ The full demo pipeline exports real GPT-2 weights, quantizes them, and runs NPU 
 **Option A: Automated** (recommended)
 
 ```bash
-cd npu/sim/verilator
+cd sim/verilator
 
 # Greedy decoding
 ./run_demo.sh --prompt "Hello" --max-tokens 10
@@ -967,11 +969,9 @@ cd npu/sim/verilator
 ./run_demo.sh --prompt "Hello" --max-tokens 10 --skip-python
 ```
 
-**Option B: Step-by-step**
+**Option B: Step-by-step** (run from the repository root)
 
 ```bash
-cd npu
-
 # 1. Export FP32 weights from HuggingFace
 DEMO_OUTDIR=sim/verilator/build/demo_data python3 python/tools/export_gpt2_weights.py
 
@@ -1001,7 +1001,7 @@ The LLaMA demo supports both random weights and real MicroLlama weights from Hug
 **Random weights** (no dependencies beyond numpy):
 
 ```bash
-cd npu/python/tools
+cd python/tools
 python3 llama_gen_weights.py --outdir ../../sim/verilator/build/llama_demo_data
 
 cd ../../sim/verilator/build
@@ -1011,7 +1011,7 @@ cd ../../sim/verilator/build
 **HuggingFace MicroLlama weights** (requires `huggingface_hub`, `safetensors`):
 
 ```bash
-cd npu/python/tools
+cd python/tools
 python3 llama_gen_weights_hf.py --outdir ../../sim/verilator/build/llama_demo_data_hf
 
 cd ../../sim/verilator/build
@@ -1023,7 +1023,7 @@ cd ../../sim/verilator/build
 Mistral uses an identical architecture to LLaMA (RMSNorm, RoPE, GQA, SwiGLU) with identical tensor naming, so the same `llama_demo_infer` testbench is reused with no changes.
 
 ```bash
-cd npu/python/tools
+cd python/tools
 python3 mistral_gen_weights_hf.py --outdir ../../sim/verilator/build/mistral_demo_data
 
 cd ../../sim/verilator/build
@@ -1035,7 +1035,7 @@ cd ../../sim/verilator/build
 Qwen2 uses the same RMSNorm + RoPE + GQA + SwiGLU architecture as LLaMA, but adds **QKV bias** (`q_proj.bias`, `k_proj.bias`, `v_proj.bias`) and uses **tied embeddings** (no separate `lm_head.weight`). The bias is applied via `VEC_ADD` instructions after each Q/K/V GEMM, requiring no RTL changes.
 
 ```bash
-cd npu/python/tools
+cd python/tools
 python3 qwen_gen_weights_hf.py --outdir ../../sim/verilator/build/qwen_demo_data
 
 cd ../../sim/verilator/build
@@ -1058,11 +1058,9 @@ The NPU hardware produces **bit-exact** logits compared to the C++ golden model 
 
 Graph Mode tests require generating an ONNX model and compiling it first:
 
-**MLP Smoke Test** (Gemm -> ReLU -> Gemm):
+**MLP Smoke Test** (Gemm -> ReLU -> Gemm), run from the repository root:
 
 ```bash
-cd npu
-
 # Generate the MLP ONNX model
 python3 python/onnx_compiler/gen_mlp_onnx.py
 
@@ -1079,7 +1077,6 @@ cd sim/verilator/build
 **CNN Smoke Test** (Conv -> ReLU -> Flatten -> Gemm):
 
 ```bash
-cd npu
 python3 python/onnx_compiler/gen_cnn_onnx.py
 python3 python/onnx_compiler/compile.py \
     --model models/conv1x_mini.onnx \
@@ -1091,8 +1088,6 @@ cd sim/verilator/build
 **Phase 3 Engine Tests** (Reduce, Math, Gather, Slice/Concat, BatchNorm+Pool):
 
 ```bash
-cd npu
-
 # Generate and compile all Phase 3 test models
 python3 python/onnx_compiler/gen_reduce_onnx.py
 python3 python/onnx_compiler/compile.py --model models/reduce_test.onnx --outdir sim/verilator/build/graph_reduce
@@ -1121,8 +1116,6 @@ cd sim/verilator/build
 **Fuzz Test** (50 random graphs):
 
 ```bash
-cd npu
-
 # Generate 50 random ONNX models
 python3 python/onnx_compiler/gen_fuzz_onnx.py
 
@@ -1141,7 +1134,6 @@ cd sim/verilator/build
 **Stress Test** (56-node deep graph with perf counters):
 
 ```bash
-cd npu
 python3 python/onnx_compiler/gen_stress_onnx.py
 python3 python/onnx_compiler/compile.py --model models/stress_test.onnx --outdir sim/verilator/build/graph_stress
 cd sim/verilator/build
@@ -1151,8 +1143,6 @@ cd sim/verilator/build
 **Phase 4 Tests** (Overlap Performance, FP16, Mixed Precision):
 
 ```bash
-cd npu
-
 # Overlap performance test (large tiled GEMMs with async dispatch)
 python3 python/onnx_compiler/gen_overlap_perf_onnx.py
 python3 python/onnx_compiler/compile.py --model models/overlap_perf_test.onnx --outdir sim/verilator/build/graph_overlap_perf
@@ -1174,7 +1164,7 @@ cd sim/verilator/build && ./mixed_precision_cnn_sim --datadir graph_mixed_cnn &&
 Verifies that KV-cached decode produces bit-exact results vs full-recompute:
 
 ```bash
-cd npu/sim/verilator/build
+cd sim/verilator/build
 ./kv_cache_sim --datadir demo_data
 ```
 
@@ -1193,7 +1183,7 @@ Expected output:
 ### Run Full Regression
 
 ```bash
-cd npu/sim/verilator/build
+cd sim/verilator/build
 
 # LLM Mode unit tests
 ./npu_sim && ./engine_sim && ./integration_sim && ./gpt2_block_sim
@@ -1289,171 +1279,170 @@ Improvements I want to make to the design:
 # Repository Structure
 
 ```
-npu/
-  rtl/
-    pkg/                     SystemVerilog packages
-      npu_pkg.sv               Engine IDs, data widths, exec mode constants
-      isa_pkg.sv               128-bit instruction format, opcodes (LLM Mode)
-      fixed_pkg.sv             Fixed-point arithmetic helpers
-      kv_pkg.sv                KV cache instruction field documentation
-    top.sv                   Full top-level (AXI bus + DMA + control + mode mux)
-    bus/                     AXI4 / AXI4-Lite interfaces
-      axi_types.sv             Type definitions
-      axi_lite_regs.sv         Host control register file (incl. EXEC_MODE, graph status)
-      axi_dma_rd.sv            AXI DMA read engine
-      axi_dma_wr.sv            AXI DMA write engine
-    ctrl/                    Microcode controller (LLM Mode)
-      ucode_fetch.sv           Instruction fetch unit
-      ucode_decode.sv          Decode + dispatch to engines
-      scoreboard.sv            6-engine busy tracking
-      barrier.sv               Barrier synchronization
-      addr_gen.sv              Address generation
-      kv_ctrl.sv               KV cache controller FSM (SRAM0 <-> kv_cache_bank bridge)
-    graph/                   Graph pipeline (Graph Mode)
-      graph_isa_pkg.sv         Graph ISA opcodes (28 opcodes), instruction/descriptor structs
-      graph_fetch.sv           Sequential instruction fetch from program SRAM
-      graph_decode.sv          Combinational 128-bit -> graph_instr_t decode
-      graph_dispatch.sv        Main FSM: scoreboard, async scheduling, engine control, EW loops, perf counters
-      graph_top.sv             Wrapper: fetch + decode + dispatch + scheduler_mode + new engine ports
-      tensor_table.sv          256-entry tensor descriptor register array
-      reduce_engine.sv         Reduce engine: Sum/Max/Mean with INT32 accumulator
-      math_engine.sv           Math engine: Exp/Log/Sqrt/Rsqrt via INT8+FP16 LUTs
-      fp16_utils.sv            FP16 combinational arithmetic (add/mul/cmp/convert)
-      graph_exp_lut.sv         INT8 -> INT8 exponential lookup table
-      graph_log_lut.sv         INT8 -> INT8 logarithm lookup table
-      graph_sqrt_lut.sv        INT8 -> INT8 square root lookup table
-      graph_rsqrt_lut.sv       INT8 -> INT8 inverse square root lookup table
-      graph_exp_lut_fp16.sv    FP16 exponential lookup table
-      graph_log_lut_fp16.sv    FP16 logarithm lookup table
-      graph_sqrt_lut_fp16.sv   FP16 square root lookup table
-      graph_rsqrt_lut_fp16.sv  FP16 inverse square root lookup table
-      gather_engine.sv         Gather engine: axis-0 row copy with bounds check
-      slice_engine.sv          Slice engine: materialized N-D slice
-      concat_engine.sv         Concat engine: last-dimension interleave
-      avgpool2d_engine.sv      AvgPool2D engine: sliding window with INT32 accumulator
-      maxpool2d_engine.sv      MaxPool2D engine: sliding window max
-      pad_engine.sv            Pad engine: constant-0 NCHW padding
-      resize_nearest_engine.sv Resize engine: nearest-neighbor upsampling
-      cast_engine.sv           Cast engine: INT8 <-> FP16 conversion
-    mem/                     Memory subsystem
-      sram_dp.sv               Dual-port SRAM primitive
-      banked_sram.sv           Multi-bank SRAM wrapper
-      kv_cache_bank.sv         Hardware KV cache (SRAM-backed)
-      tile_buffer.sv           Dual-bank ping-pong tile staging buffer
-    gemm/                    GEMM engine
-      mac_int8.sv              INT8 multiply-accumulate unit
-      mac_fp16.sv              FP16 multiply-accumulate unit (2-stage pipeline)
-      pe.sv                    Dual-MAC processing element (INT8 + FP16, dtype mux)
-      systolic_array.sv        16x16 weight-stationary systolic array (parameterizable to 24x24)
-      gemm_ctrl.sv             GEMM tiling controller (INT8 + FP16 addressing)
-      gemm_post.sv             Post-processing (requantize for INT8, bypass for FP16)
-    ops/                     Compute engines
-      softmax_engine.sv        3-pass softmax (max, exp+sum, normalize)
-      layernorm_engine.sv      LayerNorm (mean, variance, normalize)
-      gelu_engine.sv           GELU activation via LUT
-      rmsnorm_engine.sv        RMSNorm (2-pass, fused x*gamma*inv_rms)
-      rope_engine.sv           Rotary positional encoding
-      silu_lut.sv              SiLU activation via LUT
-      vec_engine.sv            Vector elementwise operations
-      exp_lut.sv               Exponential lookup table
-      recip_lut.sv             Reciprocal lookup table
-      rsqrt_lut.sv             Inverse square root lookup table
-      gelu_lut.sv              GELU lookup table
-      reduce_max.sv            Tree-based max reduction
-      reduce_sum.sv            Tree-based sum reduction
-      mean_var_engine.sv       Mean and variance computation
-  include/                   Shared C++ headers
-    graph_isa.h                C++ mirror of graph_isa_pkg (encode, decode, structs)
-    ddr_graph.h                DDR memory map constants for Graph Mode
-  sim/
-    verilator/               Verilator simulation environment
-      CMakeLists.txt           Build system (21 targets, shared Verilator libraries)
-      gpt2_block_top.sv        GPT-2 testbench top (SRAMs + ucode + engines)
-      llama_block_top.sv       LLaMA testbench top (SRAMs + ucode + engines)
-      onnx_sim_top.sv          Graph Mode testbench top (SRAMs + graph pipeline + 13 engines)
-      engine_tb_top.sv         Engine-level testbench wrapper
-      integration_top.sv       Integration testbench wrapper
-      tb_top.cpp               Target 1: Control plane smoke test
-      tb_engines.cpp           Target 2: Engine compute tests
-      tb_integration.cpp       Target 3: Attention head integration
-      tb_gpt2_block.cpp        Target 4: Full GPT-2 transformer block test
-      tb_demo_infer.cpp        Target 5: GPT-2 inference demo
-      tb_kv_cache_sim.cpp      Target 6: KV cache correctness test
-      tb_llama_block.cpp       Target 7: Full LLaMA transformer block test
-      tb_llama_demo_infer.cpp  Target 8: LLaMA inference demo
-      tb_onnx_smoke.cpp        Target 9: MLP smoke test (Graph Mode)
-      tb_onnx_cnn_smoke.cpp    Target 10: CNN smoke test (Graph Mode)
-      tb_onnx_reduce.cpp       Target 11: Reduce engine test
-      tb_onnx_math.cpp         Target 12: Math engine test
-      tb_onnx_gather.cpp       Target 13: Gather engine test
-      tb_onnx_slice_concat.cpp Target 14: Slice + Concat engine test
-      tb_onnx_batchnorm_pool.cpp Target 15: BatchNorm + AvgPool2D test
-      tb_onnx_fuzz.cpp         Target 16: 50-model fuzz test
-      tb_onnx_stress.cpp       Target 17: Stress test with perf counters
-      tb_onnx_overlap_perf.cpp Target 18: DMA+GEMM overlap performance test
-      tb_onnx_fp16_smoke.cpp   Target 19: FP16 pipeline smoke test
-      tb_mixed_precision_cnn.cpp Target 20: Mixed INT8/FP16 CNN test
-      tb_onnx_resize_pad.cpp   Target 21: Pad + Resize nearest test
-      run_demo.sh              Automated demo runner script
-  python/
-    golden/                  Python golden reference models
-      gemm_ref.py              INT8 GEMM (bit-exact match to RTL)
-      softmax_ref.py           Fixed-point softmax with LUT
-      layernorm_ref.py         Fixed-point LayerNorm
-      gelu_ref.py              GELU via LUT
-      rmsnorm_ref.py           RMSNorm (fused fixed-point)
-      rope_ref.py              Rotary positional encoding
-      silu_ref.py              SiLU activation via LUT
-      llama_infer_golden.py    LLaMA multi-step inference golden
-      quant.py                 Quantization utilities
-      attention_head_ref.py    Full attention head golden
-      gpt2_block_ref.py        Full transformer block golden
-      gpt2_infer_golden.py     Multi-step inference golden
-    tools/                   Build and debug tools
-      ddr_map.py               GPT-2 model config, SRAM layout, weight offsets
-      llama_map.py             LLaMA model config, SRAM layout, quant params
-      kv_map.py                KV cache constants, decode-mode addresses
-      export_gpt2_weights.py   Export weights from HuggingFace GPT-2
-      quantize_pack.py         INT8 quantization + weights.bin packing
-      llama_gen_weights.py     Generate random LLaMA weights + golden
-      llama_gen_weights_hf.py  Generate LLaMA weights from HuggingFace MicroLlama
-      mistral_gen_weights_hf.py Generate LLaMA weights from HuggingFace Mistral-300M
-      qwen_gen_weights_hf.py   Generate LLaMA weights from HuggingFace Qwen2-0.5B (QKV bias)
-      make_lut.py              LUT initialization file generator
-      ucode_asm.py             Microcode assembler
-    onnx_compiler/           ONNX -> Graph Mode compiler
-      __init__.py              Package init
-      compile.py               Main compiler: ONNX -> program.bin + tdesc.bin + ddr_image.bin
-      gen_mlp_onnx.py          Generate MLP test model (32 -> 16 -> 8)
-      gen_cnn_onnx.py          Generate CNN test model (Conv3x3 -> ReLU -> FC)
-      gen_reduce_onnx.py       Generate Reduce test model (ReduceSum + ReduceMax)
-      gen_math_onnx.py         Generate Math test model (Exp -> Log -> Sqrt)
-      gen_gather_onnx.py       Generate Gather test model (axis-0 row gather)
-      gen_slice_concat_onnx.py Generate Slice + Concat test model
-      gen_batchnorm_pool_onnx.py Generate BatchNorm + AvgPool test model
-      gen_fuzz_onnx.py         Generate 50 random fuzz models
-      gen_stress_onnx.py       Generate 56-node stress model
-      gen_overlap_perf_onnx.py Generate 3-layer MLP for overlap perf test
-      gen_fp16_smoke_onnx.py   Generate FP16 GEMM pipeline test
-      gen_mixed_precision_cnn_onnx.py Generate mixed INT8/FP16 CNN test
-      gen_resize_pad_onnx.py   Generate Pad + Resize nearest test
-    tests/
-      test_end2end.py          Python-level end-to-end tests
-    requirements.txt           Python dependencies
-  models/                    Generated ONNX models (by gen_*.py scripts)
-    mlp_32_16_8.onnx           MLP test model
-    conv1x_mini.onnx           CNN test model
-    reduce_test.onnx           Reduce test model
-    math_test.onnx             Math test model
-    gather_test.onnx           Gather test model
-    slice_concat_test.onnx     Slice + Concat test model
-    batchnorm_pool_test.onnx   BatchNorm + AvgPool test model
-    stress_test.onnx           Stress test model
-    overlap_perf_test.onnx     Overlap performance test model (3-layer MLP, 64x64 GEMMs)
-    fp16_smoke_test.onnx       FP16 pipeline smoke test model
-    mixed_precision_cnn_test.onnx Mixed INT8/FP16 CNN test model
-    fuzz/                      50 random fuzz models (case_0.onnx .. case_49.onnx)
-  README.md                  This file
+rtl/
+  pkg/                     SystemVerilog packages
+    npu_pkg.sv               Engine IDs, data widths, exec mode constants
+    isa_pkg.sv               128-bit instruction format, opcodes (LLM Mode)
+    fixed_pkg.sv             Fixed-point arithmetic helpers
+    kv_pkg.sv                KV cache instruction field documentation
+  top.sv                   Full top-level (AXI bus + DMA + control + mode mux)
+  bus/                     AXI4 / AXI4-Lite interfaces
+    axi_types.sv             Type definitions
+    axi_lite_regs.sv         Host control register file (incl. EXEC_MODE, graph status)
+    axi_dma_rd.sv            AXI DMA read engine
+    axi_dma_wr.sv            AXI DMA write engine
+  ctrl/                    Microcode controller (LLM Mode)
+    ucode_fetch.sv           Instruction fetch unit
+    ucode_decode.sv          Decode + dispatch to engines
+    scoreboard.sv            6-engine busy tracking
+    barrier.sv               Barrier synchronization
+    addr_gen.sv              Address generation
+    kv_ctrl.sv               KV cache controller FSM (SRAM0 <-> kv_cache_bank bridge)
+  graph/                   Graph pipeline (Graph Mode)
+    graph_isa_pkg.sv         Graph ISA opcodes (28 opcodes), instruction/descriptor structs
+    graph_fetch.sv           Sequential instruction fetch from program SRAM
+    graph_decode.sv          Combinational 128-bit -> graph_instr_t decode
+    graph_dispatch.sv        Main FSM: scoreboard, async scheduling, engine control, EW loops, perf counters
+    graph_top.sv             Wrapper: fetch + decode + dispatch + scheduler_mode + new engine ports
+    tensor_table.sv          256-entry tensor descriptor register array
+    reduce_engine.sv         Reduce engine: Sum/Max/Mean with INT32 accumulator
+    math_engine.sv           Math engine: Exp/Log/Sqrt/Rsqrt via INT8+FP16 LUTs
+    fp16_utils.sv            FP16 combinational arithmetic (add/mul/cmp/convert)
+    graph_exp_lut.sv         INT8 -> INT8 exponential lookup table
+    graph_log_lut.sv         INT8 -> INT8 logarithm lookup table
+    graph_sqrt_lut.sv        INT8 -> INT8 square root lookup table
+    graph_rsqrt_lut.sv       INT8 -> INT8 inverse square root lookup table
+    graph_exp_lut_fp16.sv    FP16 exponential lookup table
+    graph_log_lut_fp16.sv    FP16 logarithm lookup table
+    graph_sqrt_lut_fp16.sv   FP16 square root lookup table
+    graph_rsqrt_lut_fp16.sv  FP16 inverse square root lookup table
+    gather_engine.sv         Gather engine: axis-0 row copy with bounds check
+    slice_engine.sv          Slice engine: materialized N-D slice
+    concat_engine.sv         Concat engine: last-dimension interleave
+    avgpool2d_engine.sv      AvgPool2D engine: sliding window with INT32 accumulator
+    maxpool2d_engine.sv      MaxPool2D engine: sliding window max
+    pad_engine.sv            Pad engine: constant-0 NCHW padding
+    resize_nearest_engine.sv Resize engine: nearest-neighbor upsampling
+    cast_engine.sv           Cast engine: INT8 <-> FP16 conversion
+  mem/                     Memory subsystem
+    sram_dp.sv               Dual-port SRAM primitive
+    banked_sram.sv           Multi-bank SRAM wrapper
+    kv_cache_bank.sv         Hardware KV cache (SRAM-backed)
+    tile_buffer.sv           Dual-bank ping-pong tile staging buffer
+  gemm/                    GEMM engine
+    mac_int8.sv              INT8 multiply-accumulate unit
+    mac_fp16.sv              FP16 multiply-accumulate unit (2-stage pipeline)
+    pe.sv                    Dual-MAC processing element (INT8 + FP16, dtype mux)
+    systolic_array.sv        16x16 weight-stationary systolic array (parameterizable to 24x24)
+    gemm_ctrl.sv             GEMM tiling controller (INT8 + FP16 addressing)
+    gemm_post.sv             Post-processing (requantize for INT8, bypass for FP16)
+  ops/                     Compute engines
+    softmax_engine.sv        3-pass softmax (max, exp+sum, normalize)
+    layernorm_engine.sv      LayerNorm (mean, variance, normalize)
+    gelu_engine.sv           GELU activation via LUT
+    rmsnorm_engine.sv        RMSNorm (2-pass, fused x*gamma*inv_rms)
+    rope_engine.sv           Rotary positional encoding
+    silu_lut.sv              SiLU activation via LUT
+    vec_engine.sv            Vector elementwise operations
+    exp_lut.sv               Exponential lookup table
+    recip_lut.sv             Reciprocal lookup table
+    rsqrt_lut.sv             Inverse square root lookup table
+    gelu_lut.sv              GELU lookup table
+    reduce_max.sv            Tree-based max reduction
+    reduce_sum.sv            Tree-based sum reduction
+    mean_var_engine.sv       Mean and variance computation
+include/                   Shared C++ headers
+  graph_isa.h                C++ mirror of graph_isa_pkg (encode, decode, structs)
+  ddr_graph.h                DDR memory map constants for Graph Mode
+sim/
+  verilator/               Verilator simulation environment
+    CMakeLists.txt           Build system (21 targets, shared Verilator libraries)
+    gpt2_block_top.sv        GPT-2 testbench top (SRAMs + ucode + engines)
+    llama_block_top.sv       LLaMA testbench top (SRAMs + ucode + engines)
+    onnx_sim_top.sv          Graph Mode testbench top (SRAMs + graph pipeline + 13 engines)
+    engine_tb_top.sv         Engine-level testbench wrapper
+    integration_top.sv       Integration testbench wrapper
+    tb_top.cpp               Target 1: Control plane smoke test
+    tb_engines.cpp           Target 2: Engine compute tests
+    tb_integration.cpp       Target 3: Attention head integration
+    tb_gpt2_block.cpp        Target 4: Full GPT-2 transformer block test
+    tb_demo_infer.cpp        Target 5: GPT-2 inference demo
+    tb_kv_cache_sim.cpp      Target 6: KV cache correctness test
+    tb_llama_block.cpp       Target 7: Full LLaMA transformer block test
+    tb_llama_demo_infer.cpp  Target 8: LLaMA inference demo
+    tb_onnx_smoke.cpp        Target 9: MLP smoke test (Graph Mode)
+    tb_onnx_cnn_smoke.cpp    Target 10: CNN smoke test (Graph Mode)
+    tb_onnx_reduce.cpp       Target 11: Reduce engine test
+    tb_onnx_math.cpp         Target 12: Math engine test
+    tb_onnx_gather.cpp       Target 13: Gather engine test
+    tb_onnx_slice_concat.cpp Target 14: Slice + Concat engine test
+    tb_onnx_batchnorm_pool.cpp Target 15: BatchNorm + AvgPool2D test
+    tb_onnx_fuzz.cpp         Target 16: 50-model fuzz test
+    tb_onnx_stress.cpp       Target 17: Stress test with perf counters
+    tb_onnx_overlap_perf.cpp Target 18: DMA+GEMM overlap performance test
+    tb_onnx_fp16_smoke.cpp   Target 19: FP16 pipeline smoke test
+    tb_mixed_precision_cnn.cpp Target 20: Mixed INT8/FP16 CNN test
+    tb_onnx_resize_pad.cpp   Target 21: Pad + Resize nearest test
+    run_demo.sh              Automated demo runner script
+python/
+  golden/                  Python golden reference models
+    gemm_ref.py              INT8 GEMM (bit-exact match to RTL)
+    softmax_ref.py           Fixed-point softmax with LUT
+    layernorm_ref.py         Fixed-point LayerNorm
+    gelu_ref.py              GELU via LUT
+    rmsnorm_ref.py           RMSNorm (fused fixed-point)
+    rope_ref.py              Rotary positional encoding
+    silu_ref.py              SiLU activation via LUT
+    llama_infer_golden.py    LLaMA multi-step inference golden
+    quant.py                 Quantization utilities
+    attention_head_ref.py    Full attention head golden
+    gpt2_block_ref.py        Full transformer block golden
+    gpt2_infer_golden.py     Multi-step inference golden
+  tools/                   Build and debug tools
+    ddr_map.py               GPT-2 model config, SRAM layout, weight offsets
+    llama_map.py             LLaMA model config, SRAM layout, quant params
+    kv_map.py                KV cache constants, decode-mode addresses
+    export_gpt2_weights.py   Export weights from HuggingFace GPT-2
+    quantize_pack.py         INT8 quantization + weights.bin packing
+    llama_gen_weights.py     Generate random LLaMA weights + golden
+    llama_gen_weights_hf.py  Generate LLaMA weights from HuggingFace MicroLlama
+    mistral_gen_weights_hf.py Generate LLaMA weights from HuggingFace Mistral-300M
+    qwen_gen_weights_hf.py   Generate LLaMA weights from HuggingFace Qwen2-0.5B (QKV bias)
+    make_lut.py              LUT initialization file generator
+    ucode_asm.py             Microcode assembler
+  onnx_compiler/           ONNX -> Graph Mode compiler
+    __init__.py              Package init
+    compile.py               Main compiler: ONNX -> program.bin + tdesc.bin + ddr_image.bin
+    gen_mlp_onnx.py          Generate MLP test model (32 -> 16 -> 8)
+    gen_cnn_onnx.py          Generate CNN test model (Conv3x3 -> ReLU -> FC)
+    gen_reduce_onnx.py       Generate Reduce test model (ReduceSum + ReduceMax)
+    gen_math_onnx.py         Generate Math test model (Exp -> Log -> Sqrt)
+    gen_gather_onnx.py       Generate Gather test model (axis-0 row gather)
+    gen_slice_concat_onnx.py Generate Slice + Concat test model
+    gen_batchnorm_pool_onnx.py Generate BatchNorm + AvgPool test model
+    gen_fuzz_onnx.py         Generate 50 random fuzz models
+    gen_stress_onnx.py       Generate 56-node stress model
+    gen_overlap_perf_onnx.py Generate 3-layer MLP for overlap perf test
+    gen_fp16_smoke_onnx.py   Generate FP16 GEMM pipeline test
+    gen_mixed_precision_cnn_onnx.py Generate mixed INT8/FP16 CNN test
+    gen_resize_pad_onnx.py   Generate Pad + Resize nearest test
+  tests/
+    test_end2end.py          Python-level end-to-end tests
+  requirements.txt           Python dependencies
+models/                    Generated ONNX models (by gen_*.py scripts)
+  mlp_32_16_8.onnx           MLP test model
+  conv1x_mini.onnx           CNN test model
+  reduce_test.onnx           Reduce test model
+  math_test.onnx             Math test model
+  gather_test.onnx           Gather test model
+  slice_concat_test.onnx     Slice + Concat test model
+  batchnorm_pool_test.onnx   BatchNorm + AvgPool test model
+  stress_test.onnx           Stress test model
+  overlap_perf_test.onnx     Overlap performance test model (3-layer MLP, 64x64 GEMMs)
+  fp16_smoke_test.onnx       FP16 pipeline smoke test model
+  mixed_precision_cnn_test.onnx Mixed INT8/FP16 CNN test model
+  fuzz/                      50 random fuzz models (case_0.onnx .. case_49.onnx)
+README.md                  This file
 ```
 
 ## Synthesize for FPGA (Vivado)
